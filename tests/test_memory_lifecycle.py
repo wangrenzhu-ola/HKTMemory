@@ -398,3 +398,29 @@ def test_merge_results_averages_duplicate_scores(tmp_path):
     assert abs(merged[0]["_bm25_score"] - 0.6) < 1e-9
     assert merged[0]["title"] == "主结果"
     assert merged[0]["content"] == "补充结果"
+
+
+def test_store_retries_when_vector_add_returns_false(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    calls = []
+
+    def fake_add(**kwargs):
+        calls.append(kwargs["doc_id"])
+        return len(calls) > 1
+
+    memory.layers.vector_store = SimpleNamespace(add=fake_add)
+
+    stored = memory.store(
+        content="向量写入失败后应自动重试。",
+        title="向量写入重试",
+        topic="tools",
+        layer="L2",
+    )
+
+    assert stored["L2"]
+    assert len(calls) == 2
+    assert memory.layers._vector_store_add_failures == 1
+    assert memory.layers._vector_store_last_add_failure["id"] == stored["L2"]
+    assert memory.layers._vector_store_last_add_failure["retry_attempted"] is True
+    assert memory.layers._vector_store_last_add_failure["recovered"] is True

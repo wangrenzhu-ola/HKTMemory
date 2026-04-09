@@ -55,6 +55,8 @@ class LayerManagerV5:
         # 向量存储
         self.vector_store = None
         self._vector_store_error: Optional[str] = None
+        self._vector_store_add_failures = 0
+        self._vector_store_last_add_failure: Optional[Dict[str, Any]] = None
         try:
             self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
         except Exception as e:
@@ -178,22 +180,31 @@ class LayerManagerV5:
         
         # 同时存储到向量数据库
         if self._vector_store_can_add():
+            add_payload = {
+                "doc_id": l2_id,
+                "content": content,
+                "layer": "L2",
+                "source": l2_id,
+                "metadata": {
+                    "title": title,
+                    "topic": topic,
+                    **metadata
+                }
+            }
             try:
-                add_success = self.vector_store.add(
-                    doc_id=l2_id,
-                    content=content,
-                    layer="L2",
-                    source=l2_id,
-                    metadata={
-                        "title": title,
-                        "topic": topic,
-                        **metadata
-                    }
-                )
+                add_success = self.vector_store.add(**add_payload)
                 if not add_success:
-                    print(f"⚠️ Vector store add returned false for {l2_id}")
+                    self._handle_vector_add_failure(
+                        l2_id=l2_id,
+                        add_payload=add_payload,
+                        reason="vector_store.add returned False",
+                    )
             except Exception as e:
-                print(f"⚠️ Vector store failed: {e}")
+                self._handle_vector_add_failure(
+                    l2_id=l2_id,
+                    add_payload=add_payload,
+                    reason=str(e),
+                )
 
         entry = self.l2.get_entry(l2_id)
         if entry:
@@ -557,6 +568,9 @@ class LayerManagerV5:
         vector_stats = self.vector_store.get_stats() if self._vector_store_can_query() and hasattr(self.vector_store, "get_stats") else {"enabled": False}
         if not vector_stats.get("enabled", False):
             vector_stats["reason"] = self._vector_store_unavailable_reason()
+        vector_stats["add_failures"] = self._vector_store_add_failures
+        if self._vector_store_last_add_failure is not None:
+            vector_stats["last_add_failure"] = dict(self._vector_store_last_add_failure)
         
         return {
             'L0': l0_stats,
@@ -812,6 +826,31 @@ class LayerManagerV5:
         if not callable(getattr(self.vector_store, "search", None)):
             return "vector search interface unavailable"
         return ""
+
+    def _handle_vector_add_failure(self, l2_id: str, add_payload: Dict[str, Any], reason: str) -> None:
+        self._vector_store_add_failures += 1
+        self._vector_store_last_add_failure = {
+            "id": l2_id,
+            "reason": reason,
+            "retry_attempted": False,
+            "recovered": False,
+        }
+        print(f"⚠️ Vector store add failed for {l2_id}: {reason}")
+        if not self._vector_store_can_add():
+            return
+        self._vector_store_last_add_failure["retry_attempted"] = True
+        try:
+            retry_success = self.vector_store.add(**add_payload)
+        except Exception as retry_error:
+            self._vector_store_last_add_failure["retry_error"] = str(retry_error)
+            print(f"⚠️ Vector store retry failed for {l2_id}: {retry_error}")
+            return
+        if retry_success:
+            self._vector_store_last_add_failure["recovered"] = True
+            print(f"⚠️ Vector store add recovered on retry for {l2_id}")
+            return
+        self._vector_store_last_add_failure["retry_error"] = "vector_store.add returned False"
+        print(f"⚠️ Vector store retry returned false for {l2_id}")
 
     def _merge_score_field(self, existing: Dict[str, Any], item: Dict[str, Any], field: str) -> None:
         score_counts = existing.setdefault("_score_counts", {})
