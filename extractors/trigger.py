@@ -46,6 +46,47 @@ class LayerTrigger:
         (self.memory_dir / "L2-Full" / "daily").mkdir(parents=True, exist_ok=True)
         (self.memory_dir / "L2-Full" / "evergreen").mkdir(parents=True, exist_ok=True)
         (self.memory_dir / "L2-Full" / "episodes").mkdir(parents=True, exist_ok=True)
+
+    def clear_aggregates(self) -> Dict[str, int]:
+        removed = {"L0_topics": 0, "L1_topics": 0, "indexes": 0, "relationships": 0}
+        for topic_file in (self.memory_dir / "L0-Abstract" / "topics").glob("*.md"):
+            topic_file.unlink()
+            removed["L0_topics"] += 1
+        for topic_file in (self.memory_dir / "L1-Overview" / "topics").glob("*.md"):
+            topic_file.unlink()
+            removed["L1_topics"] += 1
+        for index_file in [
+            self.memory_dir / "L0-Abstract" / "index.md",
+            self.memory_dir / "L1-Overview" / "index.md",
+        ]:
+            if index_file.exists():
+                index_file.unlink()
+                removed["indexes"] += 1
+        relationships_file = self.memory_dir / "layer_relationships.json"
+        if relationships_file.exists():
+            relationships_file.unlink()
+            removed["relationships"] += 1
+        return removed
+
+    def rebuild_from_entries(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        ordered_entries = sorted(entries, key=lambda item: item.get("timestamp", ""))
+        cleared = self.clear_aggregates()
+        rebuilt = 0
+        for entry in ordered_entries:
+            l2_id = entry.get("id")
+            if not l2_id:
+                continue
+            self.on_l2_stored(
+                l2_id=l2_id,
+                content=entry.get("content", ""),
+                title=entry.get("title", l2_id),
+                topic=entry.get("topic", "general"),
+                layer_type=entry.get("type", "daily"),
+                enable_l1=True,
+                enable_l0=True,
+            )
+            rebuilt += 1
+        return {"success": True, "cleared": cleared, "rebuilt": rebuilt}
     
     def on_l2_stored(self, 
                      l2_id: str, 
@@ -342,6 +383,8 @@ class LayerTrigger:
         - 修复损坏的索引
         """
         print("🔄 开始全量同步...")
+        cleared = self.clear_aggregates()
+        print(f"   已清空聚合层: {cleared}")
         
         # 扫描所有 L2 文件
         l2_files = []

@@ -43,6 +43,10 @@ class MemoryMCPServer:
             "memory_store": self.tools.memory_store,
             "memory_forget": self.tools.memory_forget,
             "memory_update": self.tools.memory_update,
+            "memory_pin": self.tools.memory_pin,
+            "memory_importance": self.tools.memory_importance,
+            "memory_feedback": self.tools.memory_feedback,
+            "memory_rebuild": self.tools.memory_rebuild,
             "memory_stats": self.tools.memory_stats,
             "memory_list": self.tools.memory_list,
             "self_improvement_log": self.tools.self_improvement_log,
@@ -94,7 +98,8 @@ class MemoryMCPServer:
                         "title": {"type": "string", "default": ""},
                         "layer": {"type": "string", "default": "L2"},
                         "topic": {"type": "string", "default": "general"},
-                        "importance": {"type": "string", "default": "medium"}
+                        "importance": {"type": "string", "default": "medium"},
+                        "pinned": {"type": "boolean", "default": False}
                     }
                 },
                 {
@@ -102,7 +107,8 @@ class MemoryMCPServer:
                     "description": "Delete a memory",
                     "parameters": {
                         "memory_id": {"type": "string", "required": True},
-                        "layer": {"type": "string", "default": "L2"}
+                        "layer": {"type": "string", "default": "L2"},
+                        "force": {"type": "boolean", "default": False}
                     }
                 },
                 {
@@ -112,6 +118,40 @@ class MemoryMCPServer:
                         "memory_id": {"type": "string", "required": True},
                         "content": {"type": "string"},
                         "layer": {"type": "string", "default": "L2"}
+                    }
+                },
+                {
+                    "name": "memory_pin",
+                    "description": "Set pinned state for a memory",
+                    "parameters": {
+                        "memory_id": {"type": "string", "required": True},
+                        "pinned": {"type": "boolean", "default": True}
+                    }
+                },
+                {
+                    "name": "memory_importance",
+                    "description": "Set importance for a memory",
+                    "parameters": {
+                        "memory_id": {"type": "string", "required": True},
+                        "importance": {"type": "string", "required": True}
+                    }
+                },
+                {
+                    "name": "memory_feedback",
+                    "description": "Record useful/wrong/missing feedback",
+                    "parameters": {
+                        "label": {"type": "string", "required": True},
+                        "memory_id": {"type": "string"},
+                        "topic": {"type": "string"},
+                        "query": {"type": "string"},
+                        "note": {"type": "string", "default": ""}
+                    }
+                },
+                {
+                    "name": "memory_rebuild",
+                    "description": "Rebuild and compact L0/L1 aggregate files",
+                    "parameters": {
+                        "include_archived": {"type": "boolean", "default": False}
                     }
                 },
                 {

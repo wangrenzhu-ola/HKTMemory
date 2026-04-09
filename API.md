@@ -27,6 +27,8 @@ uv run scripts/hkt_memory_v5.py store \
   --title "..."             # 标题（可选）
   --topic "general"         # 主题（可选）
   --layer all               # L0/L1/L2/all，默认 all
+  --importance medium       # high/medium/low
+  --pinned                  # 创建后立即 pin
   --no-extract              # layer=all 时禁用自动提取
 ```
 
@@ -83,6 +85,101 @@ uv run scripts/hkt_memory_v5.py stats
 
 ---
 
+## forget - 软删除/硬删除
+
+```bash
+uv run scripts/hkt_memory_v5.py forget \
+  --memory-id "2026-04-09-120000"
+
+uv run scripts/hkt_memory_v5.py forget \
+  --memory-id "2026-04-09-120000" \
+  --force
+```
+
+- 默认执行 soft-delete，状态变为 `disabled`
+- `--force` 执行硬删除，同时删除 L2 原始记录与向量索引
+
+---
+
+## restore - 恢复记忆
+
+```bash
+uv run scripts/hkt_memory_v5.py restore \
+  --memory-id "2026-04-09-120000"
+```
+
+- 将 `disabled` 或 `archived` 记忆恢复为 `active`
+
+---
+
+## cleanup - 清理效果事件
+
+```bash
+uv run scripts/hkt_memory_v5.py cleanup --dry-run
+uv run scripts/hkt_memory_v5.py cleanup --scope "topic:tools"
+```
+
+- 仅清理效果事件日志，不删除正文记忆
+- 默认按 `lifecycle.effectivenessEventsDays` 执行 TTL 清理
+- `--dry-run` 只输出预计清理结果
+
+---
+
+## pin - 设置 pinned
+
+```bash
+uv run scripts/hkt_memory_v5.py pin \
+  --memory-id "2026-04-09-120000" \
+  --value true
+```
+
+---
+
+## importance - 设置重要性
+
+```bash
+uv run scripts/hkt_memory_v5.py importance \
+  --memory-id "2026-04-09-120000" \
+  --value high
+```
+
+---
+
+## feedback - useful / wrong / missing
+
+```bash
+uv run scripts/hkt_memory_v5.py feedback \
+  --label useful \
+  --memory-id "2026-04-09-120000" \
+  --topic "tools" \
+  --query "部署窗口" \
+  --note "命中正确"
+
+uv run scripts/hkt_memory_v5.py feedback \
+  --label missing \
+  --topic "tools" \
+  --query "部署窗口" \
+  --note "还缺审批流"
+```
+
+- `useful` / `wrong` 会直接写入对应记忆的反馈统计并参与排序与 prune
+- `missing` 会按 scope 记录缺口压力，并提升该 scope 的后续召回优先级
+- `wrong` / `missing` 会同步写入治理错误记录，`useful` 会同步写入学习记录
+
+---
+
+## rebuild - 物理重建与压缩聚合
+
+```bash
+uv run scripts/hkt_memory_v5.py rebuild
+uv run scripts/hkt_memory_v5.py rebuild --include-archived
+```
+
+- 清空并重建 `L0-Abstract/`、`L1-Overview/` 与 `layer_relationships.json`
+- 默认仅基于当前可见的 active 记忆重建，实现聚合文件物理压缩
+
+---
+
 ## test - 端到端测试
 
 ```bash
@@ -100,6 +197,9 @@ uv run scripts/hkt_memory_v5.py test
 | `ZHIPU_API_KEY` | 智谱 API Key | - |
 | `OPENAI_API_KEY` | OpenAI API Key | - |
 | `MINIMAX_API_KEY` | MiniMax API Key | - |
+| `HKT_MEMORY_LIFECYCLE_ENABLED` | 是否启用生命周期治理 | `true` |
+| `HKT_MEMORY_EFFECTIVENESS_EVENTS_DAYS` | 效果事件保留天数 | `90` |
+| `HKT_MEMORY_MAX_ENTRIES_PER_SCOPE` | 单 scope 活跃记忆上限 | `3000` |
 
 ---
 

@@ -195,25 +195,22 @@ class L0AbstractLayer:
             if not lines:
                 continue
             
-            # 解析ID和时间戳
             header = lines[0].strip()
-            memory_id = header.split()[0] if ' ' in header else header
-            timestamp = header[header.find('[')+1:header.find(']')] if '[' in header else ''
-            
-            # 解析内容
-            content_line = next((l for l in lines if '**Content**' in l), '')
+            timestamp_line = next((l for l in lines if '**时间**' in l), '')
+            timestamp = timestamp_line.split(':', 1)[1].strip() if ':' in timestamp_line else ''
+            content_line = next((l for l in lines if '**核心**' in l), '')
             content = content_line.split(':', 1)[1].strip() if ':' in content_line else ''
-            
-            # 解析来源
-            source_line = next((l for l in lines if '**Source**' in l), '')
+            source_line = next((l for l in lines if '**来源**' in l), '')
             source = source_line.split(':', 1)[1].strip() if ':' in source_line else ''
             
             results.append({
-                'id': memory_id,
+                'id': source or header,
                 'timestamp': timestamp,
                 'topic': topic_file.stem,
                 'content': content,
-                'source': source
+                'source': source,
+                'source_l2': source,
+                'title': header,
             })
         
         return results

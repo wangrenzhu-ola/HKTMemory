@@ -181,9 +181,30 @@ hkt_memory_v5.py retrieve --query "关键词" --topic meetings
 # 同步
 hkt_memory_v5.py sync              # 增量同步
 hkt_memory_v5.py sync --full       # 全量重新生成
+hkt_memory_v5.py rebuild           # 物理重建并压缩 L0/L1 聚合文件
 
 # 统计
 hkt_memory_v5.py stats
+
+# 遗忘
+hkt_memory_v5.py forget --memory-id "2026-04-09-120000"
+hkt_memory_v5.py forget --memory-id "2026-04-09-120000" --force
+
+# 恢复
+hkt_memory_v5.py restore --memory-id "2026-04-09-120000"
+
+# 清理事件
+hkt_memory_v5.py cleanup --dry-run
+hkt_memory_v5.py cleanup --scope "topic:tools"
+
+# pinned / importance
+hkt_memory_v5.py pin --memory-id "2026-04-09-120000" --value true
+hkt_memory_v5.py importance --memory-id "2026-04-09-120000" --value high
+
+# feedback hooks
+hkt_memory_v5.py feedback --label useful --memory-id "2026-04-09-120000" --topic tools
+hkt_memory_v5.py feedback --label wrong --memory-id "2026-04-09-120000" --topic tools
+hkt_memory_v5.py feedback --label missing --topic tools --query "部署窗口"
 
 # 测试
 hkt_memory_v5.py test
@@ -231,6 +252,8 @@ hkt_memory_v5.py test
 2. **成本**: 每次存储 L2 会调用一次 LLM（约 1000-2000 tokens）
 3. **Fallback**: 无 API Key 时使用规则提取，质量稍低但仍可用
 4. **兼容性**: v5 生成的文件与 v4 不冲突，可以共存
+5. **聚合压缩**: `forget`/`restore` 会自动重建 L0/L1，`rebuild` 可手动执行全量压缩
+6. **反馈治理**: `useful`/`wrong`/`missing` 会同时影响排序、裁剪保护与治理记录
 
 ---
 

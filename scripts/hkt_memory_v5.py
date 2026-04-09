@@ -49,6 +49,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from layers.manager_v5 import LayerManagerV5
+from config.loader import ConfigLoader
 
 
 class HKTMv5:
@@ -57,11 +58,13 @@ class HKTMv5:
     def __init__(self, memory_dir: str = None, llm_provider: str = None):
         self.memory_dir = Path(memory_dir or os.environ.get("HKT_MEMORY_DIR", "memory"))
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.config = ConfigLoader(SCRIPT_DIR).load()
         
         # 初始化分层管理器
         self.layers = LayerManagerV5(
             base_path=self.memory_dir,
-            llm_provider=llm_provider or os.getenv("L1_EXTRACTOR_PROVIDER", "zhipu")
+            llm_provider=llm_provider or os.getenv("L1_EXTRACTOR_PROVIDER", "zhipu"),
+            config=self.config
         )
     
     def store(self, 
@@ -106,11 +109,45 @@ class HKTMv5:
     
     def sync(self, full: bool = False):
         """同步各层"""
-        self.layers.sync_layers(full_sync=full)
+        return self.layers.sync_layers(full_sync=full)
     
     def stats(self) -> Dict[str, Any]:
         """获取统计"""
         return self.layers.get_stats()
+
+    def forget(self, memory_id: str, force: bool = False) -> Dict[str, Any]:
+        return self.layers.forget(memory_id=memory_id, force=force)
+
+    def restore(self, memory_id: str) -> Dict[str, Any]:
+        return self.layers.restore(memory_id=memory_id)
+
+    def cleanup(self, dry_run: bool = False, scope: str = None) -> Dict[str, Any]:
+        return self.layers.cleanup(dry_run=dry_run, scope=scope)
+
+    def pin(self, memory_id: str, pinned: bool) -> Dict[str, Any]:
+        return self.layers.set_pinned(memory_id=memory_id, pinned=pinned)
+
+    def set_importance(self, memory_id: str, importance: str) -> Dict[str, Any]:
+        return self.layers.set_importance(memory_id=memory_id, importance=importance)
+
+    def feedback(
+        self,
+        label: str,
+        memory_id: str = None,
+        topic: str = None,
+        query: str = None,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        return self.layers.feedback(
+            label=label,
+            memory_id=memory_id,
+            topic=topic,
+            query=query,
+            note=note,
+        )
+
+    def rebuild(self, include_archived: bool = False) -> Dict[str, Any]:
+        return self.layers.rebuild_aggregates(include_archived=include_archived)
 
 
 def main():
@@ -149,6 +186,13 @@ def main():
         action="store_true",
         help="禁用自动提取（仅当 layer=all 时有效）"
     )
+    store_parser.add_argument(
+        "--importance",
+        choices=["high", "medium", "low"],
+        default="medium",
+        help="重要性"
+    )
+    store_parser.add_argument("--pinned", action="store_true", help="创建后立即 pin")
     
     # Retrieve command
     retrieve_parser = subparsers.add_parser("retrieve", help="检索记忆")
@@ -172,6 +216,50 @@ def main():
     
     # Stats command
     subparsers.add_parser("stats", help="显示统计")
+
+    forget_parser = subparsers.add_parser("forget", help="遗忘记忆")
+    forget_parser.add_argument("--memory-id", required=True, help="记忆ID")
+    forget_parser.add_argument("--force", action="store_true", help="执行硬删除")
+
+    restore_parser = subparsers.add_parser("restore", help="恢复记忆")
+    restore_parser.add_argument("--memory-id", required=True, help="记忆ID")
+
+    cleanup_parser = subparsers.add_parser("cleanup", help="清理事件日志")
+    cleanup_parser.add_argument("--dry-run", action="store_true", help="仅预览，不执行删除")
+    cleanup_parser.add_argument("--scope", help="可选的 scope 过滤")
+
+    pin_parser = subparsers.add_parser("pin", help="设置 pinned 状态")
+    pin_parser.add_argument("--memory-id", required=True, help="记忆ID")
+    pin_parser.add_argument(
+        "--value",
+        choices=["true", "false"],
+        default="true",
+        help="是否置顶"
+    )
+
+    importance_parser = subparsers.add_parser("importance", help="设置重要性")
+    importance_parser.add_argument("--memory-id", required=True, help="记忆ID")
+    importance_parser.add_argument(
+        "--value",
+        choices=["high", "medium", "low"],
+        required=True,
+        help="目标重要性"
+    )
+
+    feedback_parser = subparsers.add_parser("feedback", help="记录 useful/wrong/missing 反馈")
+    feedback_parser.add_argument(
+        "--label",
+        choices=["useful", "wrong", "missing"],
+        required=True,
+        help="反馈标签"
+    )
+    feedback_parser.add_argument("--memory-id", help="关联的记忆ID")
+    feedback_parser.add_argument("--topic", help="关联主题，missing 时推荐提供")
+    feedback_parser.add_argument("--query", help="反馈对应的检索 query")
+    feedback_parser.add_argument("--note", default="", help="补充说明")
+
+    rebuild_parser = subparsers.add_parser("rebuild", help="物理重建并压缩 L0/L1 聚合文件")
+    rebuild_parser.add_argument("--include-archived", action="store_true", help="是否包含 archived 记忆")
     
     # Test command
     test_parser = subparsers.add_parser("test", help="测试存储和检索")
@@ -200,6 +288,7 @@ def main():
             title=args.title,
             topic=args.topic,
             layer=args.layer,
+            metadata={"importance": args.importance, "pinned": args.pinned},
             auto_extract=not args.no_extract
         )
         
@@ -239,7 +328,11 @@ def main():
             print("   模式: 增量同步")
         print()
         
-        memory.sync(full=args.full)
+        result = memory.sync(full=args.full)
+        if result:
+            print("🔁 同步结果\n")
+            for key, value in result.items():
+                print(f"   {key}: {value}")
     
     elif args.command == "stats":
         print("📊 统计信息\n")
@@ -251,6 +344,54 @@ def main():
             print(f"{'='*60}")
             for key, value in layer_stats.items():
                 print(f"   {key}: {value}")
+
+    elif args.command == "forget":
+        result = memory.forget(memory_id=args.memory_id, force=args.force)
+        print("🧠 遗忘结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "restore":
+        result = memory.restore(memory_id=args.memory_id)
+        print("♻️ 恢复结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "cleanup":
+        result = memory.cleanup(dry_run=args.dry_run, scope=args.scope)
+        print("🧹 清理结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "pin":
+        result = memory.pin(memory_id=args.memory_id, pinned=args.value == "true")
+        print("📌 Pin 结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "importance":
+        result = memory.set_importance(memory_id=args.memory_id, importance=args.value)
+        print("⭐ 重要性结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "feedback":
+        result = memory.feedback(
+            label=args.label,
+            memory_id=args.memory_id,
+            topic=args.topic,
+            query=args.query,
+            note=args.note,
+        )
+        print("🪝 反馈结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "rebuild":
+        result = memory.rebuild(include_archived=args.include_archived)
+        print("🧱 聚合重建结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
     
     elif args.command == "test":
         print("🧪 运行测试...\n")

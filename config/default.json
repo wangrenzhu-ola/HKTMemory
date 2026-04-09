@@ -62,6 +62,14 @@
     }
   },
   "lifecycle": {
+    "enabled": true,
+    "effectivenessEventsDays": 90,
+    "maxEntriesPerScope": 3000,
+    "pruneMode": "archive",
+    "defaultForgetMode": "soft",
+    "respectImportance": true,
+    "respectPinned": true,
+    "recencyHalfLifeHours": 72,
     "model": "weibull",
     "tiers": {
       "core": {
@@ -140,6 +148,10 @@
       "memory_store",
       "memory_forget",
       "memory_update",
+      "memory_pin",
+      "memory_importance",
+      "memory_feedback",
+      "memory_rebuild",
       "memory_stats",
       "memory_list",
       "self_improvement_log",

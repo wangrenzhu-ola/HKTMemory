@@ -20,10 +20,12 @@ class MemoryTools:
         """初始化HKT-Memory核心"""
         import sys
         sys.path.insert(0, str(self.memory_dir.parent))
-        from layers import LayerManager
+        from config.loader import ConfigLoader
+        from layers import LayerManagerV5
         from governance import LearningTracker, ErrorTracker
-        
-        self.layers = LayerManager(self.memory_dir)
+
+        config = ConfigLoader(self.memory_dir.parent).load()
+        self.layers = LayerManagerV5(self.memory_dir, config=config)
         self.learnings = LearningTracker(self.memory_dir / "governance")
         self.errors = ErrorTracker(self.memory_dir / "governance")
     
@@ -62,7 +64,7 @@ class MemoryTools:
     
     def memory_store(self, content: str, title: str = "", 
                      layer: str = "L2", topic: str = "general",
-                     importance: str = "medium") -> Dict[str, Any]:
+                     importance: str = "medium", pinned: bool = False) -> Dict[str, Any]:
         """
         存储新记忆
         
@@ -79,7 +81,7 @@ class MemoryTools:
                 title=title,
                 layer=layer,
                 topic=topic,
-                metadata={"importance": importance}
+                metadata={"importance": importance, "pinned": pinned}
             )
             return {
                 "success": True,
@@ -88,7 +90,7 @@ class MemoryTools:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def memory_forget(self, memory_id: str, layer: str = "L2") -> Dict[str, Any]:
+    def memory_forget(self, memory_id: str, layer: str = "L2", force: bool = False) -> Dict[str, Any]:
         """
         删除记忆
         
@@ -96,13 +98,11 @@ class MemoryTools:
             memory_id: 记忆ID
             layer: 所在层
         """
-        # 由于当前实现基于文件，需要实现删除逻辑
-        # 这里标记为待实现
-        return {
-            "success": False,
-            "error": "Delete operation not yet implemented in v4.0",
-            "memory_id": memory_id
-        }
+        try:
+            result = self.layers.forget(memory_id=memory_id, force=force)
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e), "memory_id": memory_id}
     
     def memory_update(self, memory_id: str, content: str = None,
                       layer: str = "L2") -> Dict[str, Any]:
@@ -119,6 +119,43 @@ class MemoryTools:
             "error": "Update operation not yet implemented in v4.0",
             "memory_id": memory_id
         }
+
+    def memory_pin(self, memory_id: str, pinned: bool = True) -> Dict[str, Any]:
+        try:
+            return self.layers.set_pinned(memory_id=memory_id, pinned=pinned)
+        except Exception as e:
+            return {"success": False, "error": str(e), "memory_id": memory_id}
+
+    def memory_importance(self, memory_id: str, importance: str) -> Dict[str, Any]:
+        try:
+            return self.layers.set_importance(memory_id=memory_id, importance=importance)
+        except Exception as e:
+            return {"success": False, "error": str(e), "memory_id": memory_id}
+
+    def memory_feedback(
+        self,
+        label: str,
+        memory_id: Optional[str] = None,
+        topic: Optional[str] = None,
+        query: Optional[str] = None,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        try:
+            return self.layers.feedback(
+                label=label,
+                memory_id=memory_id,
+                topic=topic,
+                query=query,
+                note=note,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e), "memory_id": memory_id, "label": label}
+
+    def memory_rebuild(self, include_archived: bool = False) -> Dict[str, Any]:
+        try:
+            return self.layers.rebuild_aggregates(include_archived=include_archived)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def memory_stats(self) -> Dict[str, Any]:
         """获取记忆统计信息"""

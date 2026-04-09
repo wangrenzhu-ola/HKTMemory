@@ -214,6 +214,87 @@ class L2FullLayer:
                     'source': data.get('source', '')
                 })
         return sorted(episodes, key=lambda x: x['timestamp'], reverse=True)
+
+    def iter_entries(self, scope: str = "all") -> List[Dict[str, Any]]:
+        entries: List[Dict[str, Any]] = []
+
+        if scope in ("all", "daily"):
+            for daily_file in self.daily_path.glob("*.md"):
+                entries.extend(self._iter_daily_entries(daily_file))
+
+        if scope in ("all", "evergreen"):
+            entries.extend(self._iter_evergreen_entries())
+
+        if scope in ("all", "episodes"):
+            for episode_file in self.episodes_path.glob("*.json"):
+                data = json.loads(episode_file.read_text(encoding='utf-8'))
+                metadata = data.get("metadata", {})
+                topic = metadata.get("topic", "general")
+                entries.append({
+                    "id": data.get("id"),
+                    "type": "episode",
+                    "title": data.get("type", "episode"),
+                    "content": data.get("content", ""),
+                    "timestamp": data.get("timestamp", ""),
+                    "topic": topic,
+                    "scope": metadata.get("scope") or self._build_scope(topic),
+                    "metadata": metadata,
+                    "source_path": str(episode_file),
+                })
+
+        entries.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return entries
+
+    def get_entry(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        for entry in self.iter_entries():
+            if entry.get("id") == memory_id:
+                return entry
+        return None
+
+    def delete_entry(self, memory_id: str) -> bool:
+        entry = self.get_entry(memory_id)
+        if not entry:
+            return False
+
+        if entry["type"] == "episode":
+            episode_file = Path(entry["source_path"])
+            if episode_file.exists():
+                episode_file.unlink()
+                return True
+            return False
+
+        source_path = Path(entry["source_path"])
+        if not source_path.exists():
+            return False
+
+        content = source_path.read_text(encoding="utf-8")
+        if entry["type"] == "daily":
+            timestamp = entry.get("timestamp", "")
+            time_str = timestamp[11:19] if "T" in timestamp else timestamp[-8:]
+            marker = f"### {entry['title']} ({time_str})"
+        else:
+            marker = entry.get("header", "")
+
+        if not marker:
+            return False
+
+        sections = re.split(r'(?=^### )', content, flags=re.MULTILINE)
+        kept: List[str] = []
+        removed = False
+        for section in sections:
+            if not section.strip():
+                kept.append(section)
+                continue
+            if marker in section and (entry["type"] != "evergreen" or f"ID: {memory_id}" in section):
+                removed = True
+                continue
+            kept.append(section)
+
+        if not removed:
+            return False
+
+        source_path.write_text(''.join(kept).rstrip() + "\n", encoding="utf-8")
+        return True
     
     def search(self, query: str, scope: str = "all") -> List[Dict[str, Any]]:
         """
@@ -228,36 +309,25 @@ class L2FullLayer:
         """
         results = []
         query_lower = query.lower()
-        
-        if scope in ("all", "daily"):
-            for daily_file in self.daily_path.glob("*.md"):
-                content = daily_file.read_text(encoding='utf-8')
-                if query_lower in content.lower():
-                    results.append({
-                        'type': 'daily',
-                        'date': daily_file.stem,
-                        'preview': self._extract_preview(content, query)
-                    })
-        
-        if scope in ("all", "evergreen"):
-            evergreen_content = self.get_evergreen()
-            if query_lower in evergreen_content.lower():
+
+        for entry in self.iter_entries(scope=scope):
+            combined = "\n".join([
+                str(entry.get("title", "")),
+                str(entry.get("content", "")),
+                json.dumps(entry.get("metadata", {}), ensure_ascii=False),
+            ])
+            if query_lower in combined.lower():
                 results.append({
-                    'type': 'evergreen',
-                    'file': 'MEMORY.md',
-                    'preview': self._extract_preview(evergreen_content, query)
+                    'type': entry.get('type'),
+                    'id': entry.get('id'),
+                    'title': entry.get('title'),
+                    'topic': entry.get('topic'),
+                    'scope': entry.get('scope'),
+                    'timestamp': entry.get('timestamp'),
+                    'content': entry.get('content', ''),
+                    'preview': self._extract_preview(combined, query)
                 })
-        
-        if scope in ("all", "episodes"):
-            for episode in self.list_episodes():
-                episode_data = self.get_episode(episode['id'])
-                if episode_data and query_lower in episode_data.get('content', '').lower():
-                    results.append({
-                        'type': 'episode',
-                        'id': episode['id'],
-                        'preview': self._extract_preview(episode_data.get('content', ''), query)
-                    })
-        
+
         return results
     
     def _extract_preview(self, content: str, query: str, context: int = 50) -> str:
@@ -282,24 +352,102 @@ class L2FullLayer:
     
     def get_stats(self) -> Dict[str, Any]:
         """获取L2层统计信息"""
-        daily_count = len(list(self.daily_path.glob("*.md")))
-        episode_count = len(list(self.episodes_path.glob("*.json")))
-        
-        # 计算evergreen条目数
-        evergreen_content = self.get_evergreen()
-        evergreen_entries = evergreen_content.count("### ")
-        
-        # 计算总token数（估算）
-        total_tokens = 0
-        for daily_file in self.daily_path.glob("*.md"):
-            content = daily_file.read_text(encoding='utf-8')
-            total_tokens += len(content) // 4
-        
-        total_tokens += len(evergreen_content) // 4
-        
+        entries = self.iter_entries()
+        total_tokens = sum(len(entry.get("content", "")) // 4 for entry in entries)
+
         return {
-            'total_daily_files': daily_count,
-            'total_evergreen_entries': evergreen_entries,
-            'total_episodes': episode_count,
+            'total_daily_files': len(list(self.daily_path.glob("*.md"))),
+            'total_daily_entries': len([entry for entry in entries if entry.get("type") == "daily"]),
+            'total_evergreen_entries': len([entry for entry in entries if entry.get("type") == "evergreen"]),
+            'total_episodes': len([entry for entry in entries if entry.get("type") == "episode"]),
             'estimated_total_tokens': total_tokens
         }
+
+    def _iter_daily_entries(self, daily_file: Path) -> List[Dict[str, Any]]:
+        content = daily_file.read_text(encoding="utf-8")
+        sections = re.split(r'(?=^### )', content, flags=re.MULTILINE)
+        entries: List[Dict[str, Any]] = []
+        for section in sections:
+            lines = [line for line in section.strip().splitlines() if line.strip()]
+            if not lines or not lines[0].startswith("### "):
+                continue
+            header = lines[0][4:].strip()
+            match = re.match(r"(.+?) \((\d{2}:\d{2}:\d{2})\)$", header)
+            if not match:
+                continue
+            title, time_str = match.groups()
+            metadata = {}
+            body_lines: List[str] = []
+            for line in lines[1:]:
+                if line.startswith("> Metadata:"):
+                    raw = line.split(":", 1)[1].strip()
+                    try:
+                        metadata = json.loads(raw)
+                    except json.JSONDecodeError:
+                        metadata = {}
+                elif line.startswith("- "):
+                    body_lines.append(line[2:])
+            topic = metadata.get("topic", "general")
+            entries.append({
+                "id": f"{daily_file.stem}-{time_str.replace(':', '')}",
+                "type": "daily",
+                "title": title,
+                "content": "\n".join(body_lines),
+                "timestamp": f"{daily_file.stem}T{time_str}",
+                "topic": topic,
+                "scope": metadata.get("scope") or self._build_scope(topic),
+                "metadata": metadata,
+                "source_path": str(daily_file),
+            })
+        return entries
+
+    def _iter_evergreen_entries(self) -> List[Dict[str, Any]]:
+        memory_md = self.evergreen_path / "MEMORY.md"
+        if not memory_md.exists():
+            return []
+        content = memory_md.read_text(encoding="utf-8")
+        sections = re.split(r'(?=^### )', content, flags=re.MULTILINE)
+        entries: List[Dict[str, Any]] = []
+        for section in sections:
+            lines = [line for line in section.strip().splitlines() if line.strip()]
+            if not lines or not lines[0].startswith("### "):
+                continue
+            header = lines[0][4:].strip()
+            id_line = next((line for line in lines if line.startswith("*ID: ")), "")
+            match = re.match(r"\*ID: ([^ ]+) \| Created: ([^*]+)\*", id_line)
+            if not match:
+                continue
+            memory_id, created = match.groups()
+            metadata = {}
+            body_lines: List[str] = []
+            for line in lines[1:]:
+                if line.startswith("> **Metadata**:"):
+                    raw = line.split(":", 1)[1].strip()
+                    try:
+                        metadata = json.loads(raw)
+                    except json.JSONDecodeError:
+                        metadata = {}
+                elif line.startswith("- "):
+                    body_lines.append(line[2:])
+            title = re.sub(r"^[^\w\u4e00-\u9fff]*\s*", "", header)
+            category_match = re.match(r"(.+?) \[(.+?)\]$", title)
+            category = "general"
+            if category_match:
+                title, category = category_match.groups()
+            topic = metadata.get("topic", category)
+            entries.append({
+                "id": memory_id,
+                "type": "evergreen",
+                "title": title,
+                "content": "\n".join(body_lines),
+                "timestamp": created.strip().replace(" ", "T"),
+                "topic": topic,
+                "scope": metadata.get("scope") or self._build_scope(topic),
+                "metadata": metadata,
+                "source_path": str(memory_md),
+                "header": f"### {header}",
+            })
+        return entries
+
+    def _build_scope(self, topic: str) -> str:
+        return f"topic:{topic or 'general'}"
