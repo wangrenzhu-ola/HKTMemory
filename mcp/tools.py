@@ -21,8 +21,9 @@ class MemoryTools:
         import sys
         sys.path.insert(0, str(self.memory_dir.parent))
         from config.loader import ConfigLoader
-        from layers import LayerManagerV5
-        from governance import LearningTracker, ErrorTracker
+        from governance.errors import ErrorTracker
+        from governance.learnings import LearningTracker
+        from layers.manager_v5 import LayerManagerV5
 
         config = ConfigLoader(self.memory_dir.parent).load()
         self.layers = LayerManagerV5(self.memory_dir, config=config)

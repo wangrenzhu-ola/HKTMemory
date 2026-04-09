@@ -21,9 +21,10 @@ from .l1_overview import L1OverviewLayer
 from .l2_full import L2FullLayer
 from .query_matcher import match_query_corpus
 from config.loader import ConfigLoader
-from governance import ErrorTracker, LearningTracker
-from lifecycle import MemoryLifecycleManager
-from vector_store import VectorStore
+from governance.errors import ErrorTracker
+from governance.learnings import LearningTracker
+from lifecycle.memory_lifecycle import MemoryLifecycleManager
+from vector_store.store import VectorStore
 
 
 class LayerManagerV5:

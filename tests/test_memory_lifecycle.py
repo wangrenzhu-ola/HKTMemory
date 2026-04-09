@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -424,3 +425,30 @@ def test_store_retries_when_vector_add_returns_false(tmp_path):
     assert memory.layers._vector_store_last_add_failure["id"] == stored["L2"]
     assert memory.layers._vector_store_last_add_failure["retry_attempted"] is True
     assert memory.layers._vector_store_last_add_failure["recovered"] is True
+
+
+def test_manager_v5_uses_direct_submodule_imports():
+    manager_source = (Path(__file__).parent.parent / "layers" / "manager_v5.py").read_text(encoding="utf-8")
+
+    assert "from governance import ErrorTracker, LearningTracker" not in manager_source
+    assert "from governance.errors import ErrorTracker" in manager_source
+    assert "from governance.learnings import LearningTracker" in manager_source
+
+
+def test_hkt_memory_v5_stats_entrypoint_runs(tmp_path):
+    repo_root = Path(__file__).parent.parent
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "hkt_memory_v5.py"),
+            "--memory-dir",
+            str(tmp_path / "memory"),
+            "stats",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "vector_store" in result.stdout
