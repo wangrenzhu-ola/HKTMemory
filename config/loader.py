@@ -13,6 +13,11 @@ class ConfigLoader:
         config: Dict[str, Any] = {}
         if self.config_path.exists():
             config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        retrieval = config.setdefault("retrieval", {})
+        hybrid = retrieval.setdefault("hybrid", {})
+        hybrid.setdefault("vector_weight", self._env_float("HKT_MEMORY_VECTOR_WEIGHT", 0.7))
+        hybrid.setdefault("bm25_weight", self._env_float("HKT_MEMORY_BM25_WEIGHT", 0.3))
+        hybrid.setdefault("min_similarity", self._env_float("HKT_MEMORY_MIN_SIMILARITY", 0.35))
         lifecycle = config.setdefault("lifecycle", {})
         lifecycle.setdefault("enabled", self._env_bool("HKT_MEMORY_LIFECYCLE_ENABLED", False))
         lifecycle.setdefault("effectivenessEventsDays", lifecycle.pop("effectiveness_events_days", 90))
@@ -39,6 +44,12 @@ class ConfigLoader:
             lifecycle["respectPinned"] = self._env_bool("HKT_MEMORY_RESPECT_PINNED", True)
         if "HKT_MEMORY_RECENCY_HALF_LIFE_HOURS" in os.environ:
             lifecycle["recencyHalfLifeHours"] = self._env_int("HKT_MEMORY_RECENCY_HALF_LIFE_HOURS", 72)
+        if "HKT_MEMORY_VECTOR_WEIGHT" in os.environ:
+            hybrid["vector_weight"] = self._env_float("HKT_MEMORY_VECTOR_WEIGHT", 0.7)
+        if "HKT_MEMORY_BM25_WEIGHT" in os.environ:
+            hybrid["bm25_weight"] = self._env_float("HKT_MEMORY_BM25_WEIGHT", 0.3)
+        if "HKT_MEMORY_MIN_SIMILARITY" in os.environ:
+            hybrid["min_similarity"] = self._env_float("HKT_MEMORY_MIN_SIMILARITY", 0.35)
         return config
 
     def _env_bool(self, name: str, default: bool) -> bool:
@@ -53,5 +64,14 @@ class ConfigLoader:
             return default
         try:
             return int(value)
+        except ValueError:
+            return default
+
+    def _env_float(self, name: str, default: float) -> float:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            return float(value)
         except ValueError:
             return default

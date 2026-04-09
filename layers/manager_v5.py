@@ -11,7 +11,7 @@ Layer Manager v5.0 - 自动分层存储
 import sys
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from .l0_abstract import L0AbstractLayer
 from .l1_overview import L1OverviewLayer
 from .l2_full import L2FullLayer
+from .query_matcher import match_query_corpus
 from config.loader import ConfigLoader
 from governance import ErrorTracker, LearningTracker
 from lifecycle import MemoryLifecycleManager
@@ -52,7 +53,11 @@ class LayerManagerV5:
         self.l2 = L2FullLayer(self.base_path / "L2-Full")
         
         # 向量存储
-        self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
+        try:
+            self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
+        except Exception as e:
+            print(f"⚠️ Vector store unavailable: {e}")
+            self.vector_store = None
         self.lifecycle = MemoryLifecycleManager(self.base_path, self.config.get("lifecycle", {}))
         self.learnings = LearningTracker(self.base_path / "governance")
         self.errors = ErrorTracker(self.base_path / "governance")
@@ -170,20 +175,21 @@ class LayerManagerV5:
         )
         
         # 同时存储到向量数据库
-        try:
-            self.vector_store.add(
-                doc_id=l2_id,
-                content=content,
-                layer="L2",
-                source=l2_id,
-                metadata={
-                    "title": title,
-                    "topic": topic,
-                    **metadata
-                }
-            )
-        except Exception as e:
-            print(f"⚠️ Vector store failed: {e}")
+        if self.vector_store is not None:
+            try:
+                self.vector_store.add(
+                    doc_id=l2_id,
+                    content=content,
+                    layer="L2",
+                    source=l2_id,
+                    metadata={
+                        "title": title,
+                        "topic": topic,
+                        **metadata
+                    }
+                )
+            except Exception as e:
+                print(f"⚠️ Vector store failed: {e}")
 
         entry = self.l2.get_entry(l2_id)
         if entry:
@@ -294,7 +300,11 @@ class LayerManagerV5:
                  query: str = "",
                  layer: str = "all",
                  topic: Optional[str] = None,
-                 limit: int = 10) -> Dict[str, List[Dict]]:
+                 limit: int = 10,
+                 min_similarity: Optional[float] = None,
+                 vector_weight: Optional[float] = None,
+                 bm25_weight: Optional[float] = None,
+                 debug: bool = False) -> Dict[str, List[Dict]]:
         """
         分层检索
         
@@ -308,9 +318,39 @@ class LayerManagerV5:
             按层分组的结果
         """
         results = {}
+        hybrid_options = self._get_hybrid_options(
+            min_similarity=min_similarity,
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+        )
+        debug_info: Dict[str, Any] = {
+            "query": query,
+            "topic": topic,
+            "layer": layer,
+            "config": hybrid_options,
+        }
+        vector_l2_results = self._vector_retrieve_l2(
+            query=query,
+            topic=topic,
+            limit=limit * 3,
+            min_similarity=hybrid_options["min_similarity"],
+            debug_info=debug_info if debug else None,
+        )
+        vector_l2_ids = {item.get("id") for item in vector_l2_results if item.get("id")}
+        vector_scores = {
+            item.get("id"): float(item.get("_vector_score", 0.0))
+            for item in vector_l2_results
+            if item.get("id")
+        }
 
         if layer in ("L0", "all"):
             l0_results = self.l0.retrieve(query=query, topic=topic, limit=limit * 3)
+            if vector_l2_ids:
+                l0_related = self._retrieve_l0_by_sources(topic=topic, source_ids=vector_l2_ids, vector_scores=vector_scores)
+                l0_results = self._merge_results(l0_results, l0_related, key_field="source_l2")
+            self._apply_hybrid_scores(l0_results, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
+            if debug:
+                debug_info.setdefault("layers", {})["L0"] = self._build_layer_debug(l0_results)
             results['L0'] = self._sort_by_lifecycle(
                 [item for item in l0_results if self.lifecycle.is_visible(item.get("source_l2"))],
                 limit,
@@ -318,6 +358,12 @@ class LayerManagerV5:
 
         if layer in ("L1", "all"):
             l1_results = self._retrieve_l1(query=query, topic=topic, limit=limit * 3)
+            if vector_l2_ids:
+                l1_related = self._retrieve_l1_by_sources(topic=topic, source_ids=vector_l2_ids, vector_scores=vector_scores)
+                l1_results = self._merge_results(l1_results, l1_related, key_field="source_l2")
+            self._apply_hybrid_scores(l1_results, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
+            if debug:
+                debug_info.setdefault("layers", {})["L1"] = self._build_layer_debug(l1_results)
             results['L1'] = self._sort_by_lifecycle(
                 [item for item in l1_results if self.lifecycle.is_visible(item.get("source_l2"))],
                 limit,
@@ -327,6 +373,10 @@ class LayerManagerV5:
             l2_results = self.l2.search(query=query, scope="all")
             if topic:
                 l2_results = [item for item in l2_results if item.get("topic") == topic]
+            l2_results = self._merge_results(l2_results, vector_l2_results, key_field="id")
+            self._apply_hybrid_scores(l2_results, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
+            if debug:
+                debug_info.setdefault("layers", {})["L2"] = self._build_layer_debug(l2_results)
             l2_results = [item for item in l2_results if self.lifecycle.is_visible(item.get("id"))]
             results['L2'] = self._sort_by_lifecycle(l2_results, limit)
 
@@ -337,6 +387,16 @@ class LayerManagerV5:
                 if source_id:
                     touched_ids.append(source_id)
         self.lifecycle.touch(list(dict.fromkeys(touched_ids)))
+        if debug:
+            debug_info["final_counts"] = {
+                layer_name: len(items)
+                for layer_name, items in results.items()
+            }
+            debug_info["top_hits"] = {
+                layer_name: [self._compact_debug_item(item) for item in items[:min(limit, 5)]]
+                for layer_name, items in results.items()
+            }
+            results["debug"] = debug_info
         return results
     
     def _retrieve_l1(self, query: str, topic: Optional[str], limit: int) -> List[Dict]:
@@ -356,11 +416,30 @@ class LayerManagerV5:
                     continue
                 
                 content = file.read_text(encoding='utf-8')
-                
-                if not query or query.lower() in content.lower():
-                    # 解析文件中的条目
-                    entries = self._parse_l1_file(content, file.stem)
+                entries = self._parse_l1_file(content, file.stem)
+                if not query:
                     results.extend(entries)
+                    continue
+                haystacks = [
+                    "\n".join(
+                        [
+                            str(entry.get("title", "")),
+                            str(entry.get("summary", "")),
+                            str(entry.get("content", "")),
+                            str(entry.get("topic", "")),
+                            str(entry.get("source_l2", "")),
+                        ]
+                    )
+                    for entry in entries
+                ]
+                matches = match_query_corpus(query, haystacks)
+                for entry, match in zip(entries, matches):
+                    if not match["matched"]:
+                        continue
+                    entry["_match_score"] = match["score"]
+                    entry["_bm25_score"] = match["bm25_score"]
+                    entry["_debug_match"] = match
+                    results.append(entry)
         
         # 从 sessions 目录检索（向后兼容）
         sessions_dir = self.base_path / "L1-Overview" / "sessions"
@@ -377,6 +456,26 @@ class LayerManagerV5:
         # 按时间排序并限制数量
         results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
         return results[:limit]
+
+    def _retrieve_l1_by_sources(self, topic: Optional[str], source_ids: Set[str], vector_scores: Dict[str, float]) -> List[Dict[str, Any]]:
+        if not source_ids:
+            return []
+        entries = self._retrieve_l1(query="", topic=topic, limit=10000)
+        return [
+            {**entry, "_vector_score": float(vector_scores.get(entry.get("source_l2"), 0.0))}
+            for entry in entries
+            if entry.get("source_l2") in source_ids
+        ]
+
+    def _retrieve_l0_by_sources(self, topic: Optional[str], source_ids: Set[str], vector_scores: Dict[str, float]) -> List[Dict[str, Any]]:
+        if not source_ids:
+            return []
+        entries = self.l0.retrieve(query="", topic=topic, limit=10000)
+        return [
+            {**entry, "_vector_score": float(vector_scores.get(entry.get("source_l2"), 0.0))}
+            for entry in entries
+            if entry.get("source_l2") in source_ids
+        ]
     
     def _parse_l1_file(self, content: str, topic: str) -> List[Dict]:
         """解析 L1 topic 文件"""
@@ -451,11 +550,13 @@ class LayerManagerV5:
         
         # L2 统计
         l2_stats = self.l2.get_stats()
+        vector_stats = self.vector_store.get_stats() if self.vector_store is not None else {"enabled": False}
         
         return {
             'L0': l0_stats,
             'L1': l1_stats,
             'L2': l2_stats,
+            'vector_store': vector_stats,
             'lifecycle': self.lifecycle.get_stats(),
         }
 
@@ -465,7 +566,7 @@ class LayerManagerV5:
             return result
         if force:
             removed = self.l2.delete_entry(memory_id)
-            vector_removed = self.vector_store.delete(memory_id)
+            vector_removed = self.vector_store.delete(memory_id) if self.vector_store is not None else False
             self.lifecycle.delete_manifest_entry(memory_id)
             return {
                 **result,
@@ -549,6 +650,10 @@ class LayerManagerV5:
         ranked = sorted(
             items,
             key=lambda item: (
+                item.get("_hybrid_score", 0.0),
+                item.get("_vector_score", 0.0),
+                item.get("_bm25_score", 0.0),
+                item.get("_match_score", 0.0),
                 self.lifecycle.rank_bonus(
                     item.get("source_l2") or item.get("id"),
                     scope=item.get("scope") or (f"topic:{item.get('topic')}" if item.get("topic") else None),
@@ -558,6 +663,181 @@ class LayerManagerV5:
             reverse=True,
         )
         return ranked[:limit]
+
+    def _vector_retrieve_l2(
+        self,
+        query: str,
+        topic: Optional[str],
+        limit: int,
+        min_similarity: float,
+        debug_info: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not query or self.vector_store is None:
+            return []
+        try:
+            raw_results = self.vector_store.search(query=query, top_k=max(limit, 10), layer="L2")
+        except Exception as e:
+            print(f"⚠️ Vector search failed: {e}")
+            return []
+        results: List[Dict[str, Any]] = []
+        filtered_out: List[Dict[str, Any]] = []
+        for item in raw_results:
+            memory_id = item.get("id")
+            if not memory_id:
+                continue
+            entry = self.l2.get_entry(memory_id)
+            if not entry:
+                continue
+            if topic and entry.get("topic") != topic:
+                continue
+            similarity = float(item.get("score", 0.0))
+            if similarity < min_similarity:
+                filtered_out.append(
+                    {
+                        "id": memory_id,
+                        "score": similarity,
+                        "title": entry.get("title"),
+                    }
+                )
+                continue
+            results.append({
+                "type": entry.get("type"),
+                "id": entry.get("id"),
+                "title": entry.get("title"),
+                "topic": entry.get("topic"),
+                "scope": entry.get("scope"),
+                "timestamp": entry.get("timestamp"),
+                "content": entry.get("content", ""),
+                "preview": entry.get("content", "")[:200],
+                "_vector_score": similarity,
+            })
+        if debug_info is not None:
+            debug_info["vector"] = {
+                "requested_limit": limit,
+                "raw_hits": len(raw_results),
+                "returned_hits": len(results),
+                "min_similarity": min_similarity,
+                "filtered_out": filtered_out[:10],
+                "top_hits": [
+                    {
+                        "id": item.get("id"),
+                        "title": item.get("title"),
+                        "score": round(float(item.get("_vector_score", 0.0)), 4),
+                    }
+                    for item in results[:10]
+                ],
+            }
+        return results
+
+    def _merge_results(self, primary: List[Dict[str, Any]], secondary: List[Dict[str, Any]], key_field: str) -> List[Dict[str, Any]]:
+        merged: Dict[str, Dict[str, Any]] = {}
+        ordered: List[Dict[str, Any]] = []
+        for item in primary + secondary:
+            key = item.get(key_field)
+            if not key:
+                ordered.append(item)
+                continue
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = dict(item)
+                continue
+            existing["_match_score"] = max(float(existing.get("_match_score", 0.0)), float(item.get("_match_score", 0.0)))
+            existing["_vector_score"] = max(float(existing.get("_vector_score", 0.0)), float(item.get("_vector_score", 0.0)))
+            existing["_bm25_score"] = max(float(existing.get("_bm25_score", 0.0)), float(item.get("_bm25_score", 0.0)))
+            for field, value in item.items():
+                if existing.get(field) in (None, "", []):
+                    existing[field] = value
+        ordered.extend(merged.values())
+        return ordered
+
+    def _get_hybrid_options(
+        self,
+        min_similarity: Optional[float],
+        vector_weight: Optional[float],
+        bm25_weight: Optional[float],
+    ) -> Dict[str, float]:
+        hybrid_config = self.config.get("retrieval", {}).get("hybrid", {})
+        resolved_min_similarity = float(
+            min_similarity
+            if min_similarity is not None
+            else hybrid_config.get("min_similarity", 0.35)
+        )
+        raw_vector_weight = float(
+            vector_weight
+            if vector_weight is not None
+            else hybrid_config.get("vector_weight", 0.7)
+        )
+        raw_bm25_weight = float(
+            bm25_weight
+            if bm25_weight is not None
+            else hybrid_config.get("bm25_weight", 0.3)
+        )
+        total_weight = raw_vector_weight + raw_bm25_weight
+        if total_weight <= 0:
+            raw_vector_weight = 0.7
+            raw_bm25_weight = 0.3
+            total_weight = 1.0
+        return {
+            "min_similarity": max(0.0, min(1.0, resolved_min_similarity)),
+            "vector_weight": raw_vector_weight / total_weight,
+            "bm25_weight": raw_bm25_weight / total_weight,
+        }
+
+    def _apply_hybrid_scores(self, items: List[Dict[str, Any]], vector_weight: float, bm25_weight: float) -> None:
+        for item in items:
+            vector_score = float(item.get("_vector_score", 0.0))
+            bm25_score = float(item.get("_bm25_score", 0.0))
+            hybrid_score = vector_weight * vector_score + bm25_weight * bm25_score
+            item["_hybrid_score"] = hybrid_score
+            lifecycle_bonus = self.lifecycle.rank_bonus(
+                item.get("source_l2") or item.get("id"),
+                scope=item.get("scope") or (f"topic:{item.get('topic')}" if item.get("topic") else None),
+            )
+            item["_lifecycle_score"] = lifecycle_bonus
+            match_debug = item.get("_debug_match") or {}
+            reasons: List[str] = []
+            if vector_score > 0:
+                reasons.append(f"vector={vector_score:.4f}")
+            if bm25_score > 0:
+                reasons.append(f"bm25={bm25_score:.4f}")
+            if match_debug.get("matched_terms"):
+                reasons.append(
+                    f"terms={len(match_debug.get('matched_terms', []))}/{match_debug.get('total_terms', 0)}"
+                )
+            reasons.append(f"lifecycle={lifecycle_bonus:.4f}")
+            item["_debug_explain"] = {
+                "hybrid_score": round(hybrid_score, 4),
+                "vector_score": round(vector_score, 4),
+                "bm25_score": round(bm25_score, 4),
+                "match_score": round(float(item.get("_match_score", 0.0)), 4),
+                "lifecycle_score": round(lifecycle_bonus, 4),
+                "reasons": reasons,
+                "matched_terms": match_debug.get("matched_terms", []),
+                "coverage": round(float(match_debug.get("coverage", 0.0)), 4),
+                "exact_match": bool(match_debug.get("exact_match", False)),
+            }
+
+    def _build_layer_debug(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "candidate_count": len(items),
+            "top_candidates": [self._compact_debug_item(item) for item in self._sort_by_lifecycle(items, min(5, len(items) or 1))]
+            if items else [],
+        }
+
+    def _compact_debug_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        explanation = item.get("_debug_explain", {})
+        return {
+            "id": item.get("source_l2") or item.get("id"),
+            "title": item.get("title"),
+            "topic": item.get("topic"),
+            "hybrid_score": explanation.get("hybrid_score", round(float(item.get("_hybrid_score", 0.0)), 4)),
+            "vector_score": explanation.get("vector_score", round(float(item.get("_vector_score", 0.0)), 4)),
+            "bm25_score": explanation.get("bm25_score", round(float(item.get("_bm25_score", 0.0)), 4)),
+            "match_score": explanation.get("match_score", round(float(item.get("_match_score", 0.0)), 4)),
+            "lifecycle_score": explanation.get("lifecycle_score", round(float(item.get("_lifecycle_score", 0.0)), 4)),
+            "matched_terms": explanation.get("matched_terms", []),
+            "reasons": explanation.get("reasons", []),
+        }
     
     def sync_layers(self, full_sync: bool = False):
         """

@@ -98,13 +98,21 @@ class HKTMv5:
                  query: str, 
                  layer: str = "all",
                  topic: str = None,
-                 limit: int = 10) -> Dict[str, List[Dict]]:
+                 limit: int = 10,
+                 min_similarity: float = None,
+                 vector_weight: float = None,
+                 bm25_weight: float = None,
+                 debug: bool = False) -> Dict[str, List[Dict]]:
         """检索记忆"""
         return self.layers.retrieve(
             query=query,
             layer=layer,
             topic=topic,
-            limit=limit
+            limit=limit,
+            min_similarity=min_similarity,
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+            debug=debug,
         )
     
     def sync(self, full: bool = False):
@@ -205,6 +213,10 @@ def main():
     )
     retrieve_parser.add_argument("--topic", help="主题过滤")
     retrieve_parser.add_argument("--limit", "-n", type=int, default=10, help="数量限制")
+    retrieve_parser.add_argument("--min-similarity", type=float, help="向量召回最小相似度阈值")
+    retrieve_parser.add_argument("--vector-weight", type=float, help="混合召回中的向量权重")
+    retrieve_parser.add_argument("--bm25-weight", type=float, help="混合召回中的 BM25 权重")
+    retrieve_parser.add_argument("--debug", action="store_true", help="输出命中解释与召回细节")
     
     # Sync command
     sync_parser = subparsers.add_parser("sync", help="同步各层")
@@ -300,16 +312,26 @@ def main():
     elif args.command == "retrieve":
         print(f"🔍 检索: {args.query}")
         print(f"   Layer: {args.layer}")
+        if args.min_similarity is not None:
+            print(f"   Min Similarity: {args.min_similarity}")
+        if args.vector_weight is not None or args.bm25_weight is not None:
+            print(f"   Weights: vector={args.vector_weight}, bm25={args.bm25_weight}")
         print()
         
         results = memory.retrieve(
             query=args.query,
             layer=args.layer,
             topic=args.topic,
-            limit=args.limit
+            limit=args.limit,
+            min_similarity=args.min_similarity,
+            vector_weight=args.vector_weight,
+            bm25_weight=args.bm25_weight,
+            debug=args.debug,
         )
         
         for layer_name, items in results.items():
+            if layer_name == "debug":
+                continue
             print(f"\n{'='*60}")
             print(f"📂 {layer_name} 层 ({len(items)} 条结果)")
             print(f"{'='*60}")
@@ -319,6 +341,50 @@ def main():
                 content = item.get('summary', item.get('content', ''))[:100]
                 print(f"\n{i}. {title}")
                 print(f"   {content}...")
+                if args.debug:
+                    explain = item.get("_debug_explain", {})
+                    print(
+                        "   "
+                        f"hybrid={explain.get('hybrid_score', 0.0):.4f} "
+                        f"vector={explain.get('vector_score', 0.0):.4f} "
+                        f"bm25={explain.get('bm25_score', 0.0):.4f} "
+                        f"match={explain.get('match_score', 0.0):.4f} "
+                        f"lifecycle={explain.get('lifecycle_score', 0.0):.4f}"
+                    )
+                    matched_terms = explain.get("matched_terms", [])
+                    if matched_terms:
+                        print(f"   matched_terms: {', '.join(matched_terms[:8])}")
+                    reasons = explain.get("reasons", [])
+                    if reasons:
+                        print(f"   reasons: {' | '.join(reasons)}")
+
+        if args.debug and results.get("debug"):
+            debug_info = results["debug"]
+            print(f"\n{'='*60}")
+            print("🧪 Debug 命中解释")
+            print(f"{'='*60}")
+            config = debug_info.get("config", {})
+            print(
+                "   "
+                f"vector_weight={config.get('vector_weight', 0.0):.4f} "
+                f"bm25_weight={config.get('bm25_weight', 0.0):.4f} "
+                f"min_similarity={config.get('min_similarity', 0.0):.4f}"
+            )
+            vector_info = debug_info.get("vector", {})
+            if vector_info:
+                print(
+                    "   "
+                    f"vector raw_hits={vector_info.get('raw_hits', 0)} "
+                    f"returned_hits={vector_info.get('returned_hits', 0)}"
+                )
+                if vector_info.get("filtered_out"):
+                    filtered = ", ".join(
+                        f"{item.get('id')}:{item.get('score', 0.0):.4f}"
+                        for item in vector_info.get("filtered_out", [])[:5]
+                    )
+                    print(f"   filtered_by_similarity: {filtered}")
+            for layer_name, info in debug_info.get("layers", {}).items():
+                print(f"   {layer_name} candidates={info.get('candidate_count', 0)}")
     
     elif args.command == "sync":
         print("🔄 同步各层...")

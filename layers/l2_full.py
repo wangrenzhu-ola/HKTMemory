@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Iterator
 import re
 
+from .query_matcher import match_query_corpus
+
 
 class L2FullLayer:
     """
@@ -307,27 +309,37 @@ class L2FullLayer:
         Returns:
             匹配结果列表
         """
+        entries = list(self.iter_entries(scope=scope))
+        haystacks = [
+            "\n".join(
+                [
+                    str(entry.get("title", "")),
+                    str(entry.get("content", "")),
+                    str(entry.get("topic", "")),
+                    json.dumps(entry.get("metadata", {}), ensure_ascii=False),
+                ]
+            )
+            for entry in entries
+        ]
+        matches = match_query_corpus(query, haystacks)
         results = []
-        query_lower = query.lower()
-
-        for entry in self.iter_entries(scope=scope):
-            combined = "\n".join([
-                str(entry.get("title", "")),
-                str(entry.get("content", "")),
-                json.dumps(entry.get("metadata", {}), ensure_ascii=False),
-            ])
-            if query_lower in combined.lower():
-                results.append({
-                    'type': entry.get('type'),
-                    'id': entry.get('id'),
-                    'title': entry.get('title'),
-                    'topic': entry.get('topic'),
-                    'scope': entry.get('scope'),
-                    'timestamp': entry.get('timestamp'),
-                    'content': entry.get('content', ''),
-                    'preview': self._extract_preview(combined, query)
-                })
-
+        for entry, combined, match in zip(entries, haystacks, matches):
+            if not match["matched"]:
+                continue
+            results.append({
+                'type': entry.get('type'),
+                'id': entry.get('id'),
+                'title': entry.get('title'),
+                'topic': entry.get('topic'),
+                'scope': entry.get('scope'),
+                'timestamp': entry.get('timestamp'),
+                'content': entry.get('content', ''),
+                'preview': self._extract_preview(combined, query),
+                '_match_score': match["score"],
+                '_bm25_score': match["bm25_score"],
+                '_debug_match': match,
+            })
+        results.sort(key=lambda item: (item.get("_match_score", 0.0), item.get("timestamp", "")), reverse=True)
         return results
     
     def _extract_preview(self, content: str, query: str, context: int = 50) -> str:

@@ -52,6 +52,10 @@ uv run scripts/hkt_memory_v5.py retrieve \
   --layer all               # L0/L1/L2/all
   --topic "meetings"        # 主题过滤（可选）
   --limit 10                # 返回数量
+  --min-similarity 0.35     # 向量召回阈值（可选）
+  --vector-weight 0.7       # 向量权重（可选）
+  --bm25-weight 0.3         # BM25 权重（可选）
+  --debug                   # 输出命中解释（可选）
 ```
 
 ### 示例
@@ -62,6 +66,12 @@ uv run scripts/hkt_memory_v5.py retrieve \
   --layer all \
   --limit 5
 ```
+
+- 默认走混合召回：L2 先合并向量相似度结果与关键词结果，再映射回 L1/L0
+- 可用 `--min-similarity` 控制向量候选过滤，用 `--vector-weight` / `--bm25-weight` 调整最终排序
+- `--debug` 会输出每条结果的 hybrid/vector/BM25/match/lifecycle 分数与命中原因
+- 只有在配置了 `HKT_MEMORY_API_KEY` / `HKT_MEMORY_BASE_URL` / `HKT_MEMORY_MODEL` 且向量库可用时，才会启用向量部分
+- 若向量库不可用，系统会自动退回到本地文本检索
 
 ---
 

@@ -2,6 +2,7 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.hkt_memory_v5 import HKTMv5
@@ -166,3 +167,180 @@ def test_pin_importance_feedback_and_rebuild(tmp_path):
     assert "记忆反馈 useful" in learnings
     assert "记忆反馈 wrong" in errors
     assert "记忆反馈 missing" in errors
+
+
+def test_retrieve_long_query_matches_token_overlap(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    memory.store(
+        content="\n".join(
+            [
+                "技术方案评审记录",
+                "HTML PPT 页面方案使用 mermaid 做结构表达。",
+                "前端设计需要兼容 VMware 环境。",
+                "另外要对接 Dify workflow 和 Harness 发布链路。",
+            ]
+        ),
+        title="技术方案评审",
+        topic="tools",
+        layer="all",
+    )
+
+    query = "技术方案评审 HTML PPT 页面 mermaid 前端设计 VMware Dify Harness"
+    results = memory.retrieve(query=query, layer="all", limit=5)
+
+    assert len(results["L2"]) >= 1
+    assert len(results["L1"]) >= 1
+    assert len(results["L0"]) >= 1
+    assert results["L2"][0]["title"] == "技术方案评审"
+
+
+def test_hybrid_retrieve_uses_vector_results_for_all_layers(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    stored = memory.store(
+        content="\n".join(
+            [
+                "会议录音自动整理成纪要。",
+                "支持音频转写和结构化摘要。",
+                "适合团队复盘。",
+            ]
+        ),
+        title="录音纪要工具",
+        topic="tools",
+        layer="all",
+    )
+    memory_id = stored["L2"]
+
+    def fake_vector_search(query: str, top_k: int = 5, layer: str = None):
+        return [
+            {
+                "id": memory_id,
+                "content": "会议录音自动整理成纪要。",
+                "score": 0.92,
+                "metadata": {"topic": "tools"},
+                "source": memory_id,
+                "layer": "L2",
+                "access_count": 0,
+            }
+        ]
+
+    if memory.layers.vector_store is None:
+        memory.layers.vector_store = SimpleNamespace(search=fake_vector_search)
+    else:
+        memory.layers.vector_store.search = fake_vector_search
+
+    results = memory.retrieve(query="语音转文字 工具", layer="all", limit=5)
+
+    assert len(results["L2"]) >= 1
+    assert len(results["L1"]) >= 1
+    assert len(results["L0"]) >= 1
+    assert results["L2"][0]["id"] == memory_id
+    assert results["L1"][0]["source_l2"] == memory_id
+    assert results["L0"][0]["source_l2"] == memory_id
+    assert results["L2"][0]["_vector_score"] == 0.92
+
+
+def test_retrieve_similarity_threshold_filters_low_vector_hits(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    stored = memory.store(
+        content="这是一个偏语义命中的记忆条目，文本里没有检索词。",
+        title="语义召回测试",
+        topic="tools",
+        layer="all",
+    )
+    memory_id = stored["L2"]
+
+    def fake_vector_search(query: str, top_k: int = 5, layer: str = None):
+        return [
+            {
+                "id": memory_id,
+                "content": "这是一个偏语义命中的记忆条目，文本里没有检索词。",
+                "score": 0.41,
+                "metadata": {"topic": "tools"},
+                "source": memory_id,
+                "layer": "L2",
+                "access_count": 0,
+            }
+        ]
+
+    if memory.layers.vector_store is None:
+        memory.layers.vector_store = SimpleNamespace(search=fake_vector_search)
+    else:
+        memory.layers.vector_store.search = fake_vector_search
+
+    permissive = memory.retrieve(query="完全不同的表达", layer="L2", limit=5, min_similarity=0.4)
+    strict = memory.retrieve(query="完全不同的表达", layer="L2", limit=5, min_similarity=0.5)
+
+    assert permissive["L2"][0]["id"] == memory_id
+    assert strict["L2"] == []
+
+
+def test_retrieve_debug_and_weighting_are_exposed(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    vector_first = memory.store(
+        content="录音转纪要、会议总结、音频整理。",
+        title="会议纪要助手",
+        topic="tools",
+        layer="all",
+    )
+    lexical_first = memory.store(
+        content="这是专门描述语音转文字工具的文档，语音转文字工具支持批量文件。",
+        title="语音转文字工具",
+        topic="tools",
+        layer="all",
+    )
+
+    def fake_vector_search(query: str, top_k: int = 5, layer: str = None):
+        return [
+            {
+                "id": vector_first["L2"],
+                "content": "录音转纪要、会议总结、音频整理。",
+                "score": 0.95,
+                "metadata": {"topic": "tools"},
+                "source": vector_first["L2"],
+                "layer": "L2",
+                "access_count": 0,
+            },
+            {
+                "id": lexical_first["L2"],
+                "content": "这是专门描述语音转文字工具的文档。",
+                "score": 0.35,
+                "metadata": {"topic": "tools"},
+                "source": lexical_first["L2"],
+                "layer": "L2",
+                "access_count": 0,
+            },
+        ]
+
+    if memory.layers.vector_store is None:
+        memory.layers.vector_store = SimpleNamespace(search=fake_vector_search)
+    else:
+        memory.layers.vector_store.search = fake_vector_search
+
+    vector_heavy = memory.retrieve(
+        query="语音转文字 工具",
+        layer="L2",
+        limit=5,
+        vector_weight=0.9,
+        bm25_weight=0.1,
+        debug=True,
+    )
+    bm25_heavy = memory.retrieve(
+        query="语音转文字 工具",
+        layer="L2",
+        limit=5,
+        vector_weight=0.1,
+        bm25_weight=0.9,
+        debug=True,
+    )
+
+    assert vector_heavy["L2"][0]["id"] == vector_first["L2"]
+    assert bm25_heavy["L2"][0]["id"] == lexical_first["L2"]
+    assert "debug" in vector_heavy
+    assert vector_heavy["debug"]["config"]["vector_weight"] == 0.9
+    assert vector_heavy["debug"]["config"]["bm25_weight"] == 0.1
+    assert vector_heavy["debug"]["layers"]["L2"]["candidate_count"] >= 2
+    assert vector_heavy["L2"][0]["_debug_explain"]["reasons"]

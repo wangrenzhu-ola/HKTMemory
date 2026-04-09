@@ -103,8 +103,16 @@ uv run scripts/hkt_memory_v5.py store \
 ```bash
 uv run scripts/hkt_memory_v5.py retrieve \
   --query "API设计" \
-  --layer all
+  --layer all \
+  --min-similarity 0.35 \
+  --vector-weight 0.7 \
+  --bm25-weight 0.3 \
+  --debug
 ```
+
+- 默认使用混合召回：L2 合并向量相似度与关键词匹配，再把命中的 `source_l2` 关联回 L1/L0
+- 支持配置向量相似度阈值、向量/BM25 混合权重，并输出 debug 命中解释
+- 未配置 embedding 环境变量时会自动退回本地文本检索
 
 ### 4. 全量同步（迁移旧数据）
 

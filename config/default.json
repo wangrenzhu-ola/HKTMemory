@@ -47,7 +47,8 @@
   "retrieval": {
     "hybrid": {
       "vector_weight": 0.7,
-      "bm25_weight": 0.3
+      "bm25_weight": 0.3,
+      "min_similarity": 0.35
     },
     "reranker": {
       "enabled": true,

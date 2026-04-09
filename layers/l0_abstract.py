@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import re
 
+from .query_matcher import match_query_corpus
+
 
 class L0AbstractLayer:
     """
@@ -172,14 +174,30 @@ class L0AbstractLayer:
         
         # 简单关键词过滤
         if query:
-            query_lower = query.lower()
-            results = [
-                r for r in results 
-                if query_lower in r.get('content', '').lower()
+            haystacks = [
+                "\n".join(
+                    [
+                        str(result.get("title", "")),
+                        str(result.get("content", "")),
+                        str(result.get("topic", "")),
+                        str(result.get("source_l2", "")),
+                    ]
+                )
+                for result in results
             ]
+            matches = match_query_corpus(query, haystacks)
+            filtered = []
+            for result, match in zip(results, matches):
+                if not match["matched"]:
+                    continue
+                result["_match_score"] = match["score"]
+                result["_bm25_score"] = match["bm25_score"]
+                result["_debug_match"] = match
+                filtered.append(result)
+            results = filtered
         
         # 按时间排序，返回最新
-        results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        results.sort(key=lambda x: (x.get('_match_score', 0.0), x.get('timestamp', '')), reverse=True)
         return results[:limit]
     
     def _parse_topic_file(self, topic_file: Path) -> List[Dict[str, Any]]:
