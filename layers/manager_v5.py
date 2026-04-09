@@ -53,11 +53,13 @@ class LayerManagerV5:
         self.l2 = L2FullLayer(self.base_path / "L2-Full")
         
         # 向量存储
+        self.vector_store = None
+        self._vector_store_error: Optional[str] = None
         try:
             self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
         except Exception as e:
+            self._vector_store_error = str(e)
             print(f"⚠️ Vector store unavailable: {e}")
-            self.vector_store = None
         self.lifecycle = MemoryLifecycleManager(self.base_path, self.config.get("lifecycle", {}))
         self.learnings = LearningTracker(self.base_path / "governance")
         self.errors = ErrorTracker(self.base_path / "governance")
@@ -175,9 +177,9 @@ class LayerManagerV5:
         )
         
         # 同时存储到向量数据库
-        if self.vector_store is not None:
+        if self._vector_store_can_add():
             try:
-                self.vector_store.add(
+                add_success = self.vector_store.add(
                     doc_id=l2_id,
                     content=content,
                     layer="L2",
@@ -188,6 +190,8 @@ class LayerManagerV5:
                         **metadata
                     }
                 )
+                if not add_success:
+                    print(f"⚠️ Vector store add returned false for {l2_id}")
             except Exception as e:
                 print(f"⚠️ Vector store failed: {e}")
 
@@ -550,7 +554,9 @@ class LayerManagerV5:
         
         # L2 统计
         l2_stats = self.l2.get_stats()
-        vector_stats = self.vector_store.get_stats() if self.vector_store is not None else {"enabled": False}
+        vector_stats = self.vector_store.get_stats() if self._vector_store_can_query() and hasattr(self.vector_store, "get_stats") else {"enabled": False}
+        if not vector_stats.get("enabled", False):
+            vector_stats["reason"] = self._vector_store_unavailable_reason()
         
         return {
             'L0': l0_stats,
@@ -672,12 +678,47 @@ class LayerManagerV5:
         min_similarity: float,
         debug_info: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        if not query or self.vector_store is None:
+        if not query:
+            if debug_info is not None:
+                debug_info["vector"] = {
+                    "enabled": self._vector_store_can_query(),
+                    "reason": "empty_query",
+                    "requested_limit": limit,
+                    "raw_hits": 0,
+                    "returned_hits": 0,
+                    "min_similarity": min_similarity,
+                    "filtered_out": [],
+                    "top_hits": [],
+                }
+            return []
+        if not self._vector_store_can_query():
+            if debug_info is not None:
+                debug_info["vector"] = {
+                    "enabled": False,
+                    "reason": self._vector_store_unavailable_reason(),
+                    "requested_limit": limit,
+                    "raw_hits": 0,
+                    "returned_hits": 0,
+                    "min_similarity": min_similarity,
+                    "filtered_out": [],
+                    "top_hits": [],
+                }
             return []
         try:
             raw_results = self.vector_store.search(query=query, top_k=max(limit, 10), layer="L2")
         except Exception as e:
             print(f"⚠️ Vector search failed: {e}")
+            if debug_info is not None:
+                debug_info["vector"] = {
+                    "enabled": False,
+                    "reason": str(e),
+                    "requested_limit": limit,
+                    "raw_hits": 0,
+                    "returned_hits": 0,
+                    "min_similarity": min_similarity,
+                    "filtered_out": [],
+                    "top_hits": [],
+                }
             return []
         results: List[Dict[str, Any]] = []
         filtered_out: List[Dict[str, Any]] = []
@@ -713,6 +754,7 @@ class LayerManagerV5:
             })
         if debug_info is not None:
             debug_info["vector"] = {
+                "enabled": True,
                 "requested_limit": limit,
                 "raw_hits": len(raw_results),
                 "returned_hits": len(results),
@@ -741,14 +783,50 @@ class LayerManagerV5:
             if existing is None:
                 merged[key] = dict(item)
                 continue
-            existing["_match_score"] = max(float(existing.get("_match_score", 0.0)), float(item.get("_match_score", 0.0)))
-            existing["_vector_score"] = max(float(existing.get("_vector_score", 0.0)), float(item.get("_vector_score", 0.0)))
-            existing["_bm25_score"] = max(float(existing.get("_bm25_score", 0.0)), float(item.get("_bm25_score", 0.0)))
+            existing_match_score = float(existing.get("_match_score", 0.0))
+            incoming_match_score = float(item.get("_match_score", 0.0))
+            self._merge_score_field(existing, item, "_match_score")
+            self._merge_score_field(existing, item, "_vector_score")
+            self._merge_score_field(existing, item, "_bm25_score")
+            if incoming_match_score > existing_match_score and item.get("_debug_match"):
+                existing["_debug_match"] = item.get("_debug_match")
             for field, value in item.items():
                 if existing.get(field) in (None, "", []):
                     existing[field] = value
-        ordered.extend(merged.values())
+        for item in merged.values():
+            item.pop("_score_counts", None)
+            ordered.append(item)
         return ordered
+
+    def _vector_store_can_query(self) -> bool:
+        return self.vector_store is not None and callable(getattr(self.vector_store, "search", None))
+
+    def _vector_store_can_add(self) -> bool:
+        return self.vector_store is not None and callable(getattr(self.vector_store, "add", None))
+
+    def _vector_store_unavailable_reason(self) -> str:
+        if self._vector_store_error:
+            return self._vector_store_error
+        if self.vector_store is None:
+            return "vector store unavailable"
+        if not callable(getattr(self.vector_store, "search", None)):
+            return "vector search interface unavailable"
+        return ""
+
+    def _merge_score_field(self, existing: Dict[str, Any], item: Dict[str, Any], field: str) -> None:
+        score_counts = existing.setdefault("_score_counts", {})
+        existing_score = float(existing.get(field, 0.0))
+        incoming_score = float(item.get(field, 0.0))
+        existing_count = int(score_counts.get(field, 1 if existing_score > 0 else 0))
+        incoming_count = 1 if incoming_score > 0 else 0
+        if incoming_count == 0:
+            return
+        total_count = existing_count + incoming_count
+        if existing_count == 0:
+            existing[field] = incoming_score
+        else:
+            existing[field] = ((existing_score * existing_count) + incoming_score) / total_count
+        score_counts[field] = total_count
 
     def _get_hybrid_options(
         self,

@@ -344,3 +344,57 @@ def test_retrieve_debug_and_weighting_are_exposed(tmp_path):
     assert vector_heavy["debug"]["config"]["bm25_weight"] == 0.1
     assert vector_heavy["debug"]["layers"]["L2"]["candidate_count"] >= 2
     assert vector_heavy["L2"][0]["_debug_explain"]["reasons"]
+
+
+def test_retrieve_gracefully_reports_vector_store_unavailable(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    stored = memory.store(
+        content="语音转文字工具支持批量识别和摘要。",
+        title="语音转文字工具",
+        topic="tools",
+        layer="L2",
+    )
+
+    memory.layers.vector_store = None
+    memory.layers._vector_store_error = "forced unavailable in test"
+
+    results = memory.retrieve(query="语音转文字 工具", layer="L2", limit=5, debug=True)
+
+    assert results["L2"][0]["id"] == stored["L2"]
+    assert results["debug"]["vector"]["enabled"] is False
+    assert results["debug"]["vector"]["reason"] == "forced unavailable in test"
+
+
+def test_merge_results_averages_duplicate_scores(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+
+    merged = memory.layers._merge_results(
+        primary=[
+            {
+                "id": "shared",
+                "title": "主结果",
+                "_match_score": 0.9,
+                "_vector_score": 0.6,
+                "_bm25_score": 0.8,
+                "_debug_match": {"matched_terms": ["语音"], "coverage": 1.0},
+            }
+        ],
+        secondary=[
+            {
+                "id": "shared",
+                "content": "补充结果",
+                "_match_score": 0.3,
+                "_vector_score": 0.2,
+                "_bm25_score": 0.4,
+            }
+        ],
+        key_field="id",
+    )
+
+    assert len(merged) == 1
+    assert abs(merged[0]["_match_score"] - 0.6) < 1e-9
+    assert abs(merged[0]["_vector_score"] - 0.4) < 1e-9
+    assert abs(merged[0]["_bm25_score"] - 0.6) < 1e-9
+    assert merged[0]["title"] == "主结果"
+    assert merged[0]["content"] == "补充结果"
