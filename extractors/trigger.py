@@ -72,6 +72,7 @@ class LayerTrigger:
         Returns:
             { "L2": l2_id, "L1": l1_id, "L0": l0_id }
         """
+        topic = self._normalize_topic(topic)
         timestamp = datetime.now().isoformat()
         result = {"L2": l2_id}
         l1_summary = None
@@ -374,19 +375,42 @@ class LayerTrigger:
         print(f"\n✅ 全量同步完成，处理了 {len(l2_files)} 个文件")
     
     def _infer_topic(self, content: str) -> str:
-        """从内容推断主题"""
-        # 简单的关键词匹配
-        topic_keywords = {
-            "agent": ["agent", "技能", "skill", "bot"],
-            "meeting": ["会议", "纪要", "meeting", "讨论"],
-            "tech": ["api", "架构", "设计", "代码", "实现"],
-            "project": ["项目", "进度", "里程碑", "交付"],
-            "tool": ["工具", "脚本", "自动化", "workflow"],
-        }
-        
         content_lower = content.lower()
-        for topic, keywords in topic_keywords.items():
-            if any(kw in content_lower for kw in keywords):
-                return topic
-        
-        return "general"
+        scores = {
+            "boss-report": 0,
+            "strategy": 0,
+            "tools": 0,
+            "risks": 0,
+        }
+        mapping = {
+            "boss-report": ["boss", "ceo", "汇报", "口径", "老板", "替代表述"],
+            "strategy": ["战略", "策略", "架构", "治理", "路线图", "优先级", "agent", "skill"],
+            "tools": ["工具", "脚本", "自动化", "workflow", "修复", "依赖", "numpy", "目录映射"],
+            "risks": ["风险", "问题", "报错", "故障", "阻塞", "告警"],
+        }
+        for topic, keywords in mapping.items():
+            for kw in keywords:
+                if kw in content_lower:
+                    scores[topic] += 1
+        metadata_topics = ["boss-report", "strategy", "tools", "risks", "agent", "meeting", "tool", "tech", "project", "general"]
+        for t in metadata_topics:
+            marker = f'"topic": "{t}"'
+            count = content_lower.count(marker)
+            if count > 0:
+                scores[self._normalize_topic(t)] += count * 3
+        best_topic = max(scores.items(), key=lambda x: x[1])[0]
+        if scores[best_topic] == 0:
+            return "tools"
+        return best_topic
+
+    def _normalize_topic(self, topic: str) -> str:
+        t = (topic or "").strip().lower()
+        alias = {
+            "agent": "strategy",
+            "meeting": "boss-report",
+            "tool": "tools",
+            "tech": "strategy",
+            "project": "strategy",
+            "general": "tools",
+        }
+        return alias.get(t, t if t in {"boss-report", "strategy", "tools", "risks"} else "tools")
