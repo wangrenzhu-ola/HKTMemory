@@ -392,12 +392,16 @@ class LayerTrigger:
             for kw in keywords:
                 if kw in content_lower:
                     scores[topic] += 1
-        metadata_topics = ["boss-report", "strategy", "tools", "risks", "agent", "meeting", "tool", "tech", "project", "general"]
-        for t in metadata_topics:
-            marker = f'"topic": "{t}"'
-            count = content_lower.count(marker)
+        metadata_topic_aliases = {
+            "boss-report": ["boss-report", "meeting"],
+            "strategy": ["strategy", "agent", "tech", "project"],
+            "tools": ["tools", "tool", "general"],
+            "risks": ["risks"],
+        }
+        for topic, aliases in metadata_topic_aliases.items():
+            count = sum(content_lower.count(f'"topic": "{alias}"') for alias in aliases)
             if count > 0:
-                scores[self._normalize_topic(t)] += count * 3
+                scores[topic] += count * 3
         best_topic = max(scores.items(), key=lambda x: x[1])[0]
         if scores[best_topic] == 0:
             return "tools"
