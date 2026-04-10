@@ -10,7 +10,12 @@ class MemoryLifecycleManager:
         self.base_path = Path(base_path)
         self.config = config or {}
         self.lifecycle_dir = self.base_path / "_lifecycle"
-        self.lifecycle_dir.mkdir(parents=True, exist_ok=True)
+        self._io_degraded = False
+        self._last_io_error: Optional[Dict[str, str]] = None
+        try:
+            self.lifecycle_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self._handle_io_error("mkdir", self.lifecycle_dir, error)
         self.manifest_path = self.lifecycle_dir / "manifest.json"
         self.events_path = self.lifecycle_dir / "events.jsonl"
         self.state_path = self.lifecycle_dir / "state.json"
@@ -373,6 +378,8 @@ class MemoryLifecycleManager:
                 "by_label": feedback_by_label,
                 "scope_feedback": self._state.get("scope_feedback", {}),
             },
+            "io_degraded": self._io_degraded,
+            "last_io_error": dict(self._last_io_error) if self._last_io_error else None,
         }
 
     def rank_bonus(self, memory_id: Optional[str], scope: Optional[str] = None) -> float:
@@ -425,8 +432,7 @@ class MemoryLifecycleManager:
             "scope": scope,
             "data": data or {},
         }
-        with open(self.events_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        return self._append_text(self.events_path, json.dumps(event, ensure_ascii=False) + "\n")
 
     def _load_json(self, path: Path, default: Any) -> Any:
         if not path.exists():
@@ -435,18 +441,32 @@ class MemoryLifecycleManager:
             return json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return default
+        except OSError as error:
+            self._handle_io_error("read", path, error)
+            return default
 
-    def _save_manifest(self) -> None:
-        self.manifest_path.write_text(json.dumps(self._manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _save_manifest(self) -> bool:
+        return self._write_text(
+            self.manifest_path,
+            json.dumps(self._manifest, ensure_ascii=False, indent=2),
+        )
 
-    def _save_state(self) -> None:
-        self.state_path.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _save_state(self) -> bool:
+        return self._write_text(
+            self.state_path,
+            json.dumps(self._state, ensure_ascii=False, indent=2),
+        )
 
     def _load_events(self) -> List[Dict[str, Any]]:
         if not self.events_path.exists():
             return []
         events: List[Dict[str, Any]] = []
-        for line in self.events_path.read_text(encoding="utf-8").splitlines():
+        try:
+            raw_content = self.events_path.read_text(encoding="utf-8")
+        except OSError as error:
+            self._handle_io_error("read", self.events_path, error)
+            return []
+        for line in raw_content.splitlines():
             if not line.strip():
                 continue
             try:
@@ -455,11 +475,47 @@ class MemoryLifecycleManager:
                 continue
         return events
 
-    def _write_events(self, events: List[Dict[str, Any]]) -> None:
+    def _write_events(self, events: List[Dict[str, Any]]) -> bool:
         payload = "\n".join(json.dumps(item, ensure_ascii=False) for item in events)
         if payload:
             payload += "\n"
-        self.events_path.write_text(payload, encoding="utf-8")
+        return self._write_text(self.events_path, payload)
+
+    def _write_text(self, path: Path, payload: str) -> bool:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self._handle_io_error("mkdir", path.parent, error)
+            return False
+        try:
+            path.write_text(payload, encoding="utf-8")
+            return True
+        except OSError as error:
+            self._handle_io_error("write", path, error)
+            return False
+
+    def _append_text(self, path: Path, payload: str) -> bool:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self._handle_io_error("mkdir", path.parent, error)
+            return False
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(payload)
+            return True
+        except OSError as error:
+            self._handle_io_error("append", path, error)
+            return False
+
+    def _handle_io_error(self, operation: str, path: Path, error: OSError) -> None:
+        self._io_degraded = True
+        self._last_io_error = {
+            "operation": operation,
+            "path": str(path),
+            "error": str(error),
+        }
+        print(f"⚠️ Lifecycle IO degraded during {operation}: {path} ({error})")
 
     def _parse_time(self, value: Optional[str]) -> Optional[datetime]:
         if not value:

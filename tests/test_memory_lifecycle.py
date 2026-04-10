@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -452,3 +453,81 @@ def test_hkt_memory_v5_stats_entrypoint_runs(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "vector_store" in result.stdout
+
+
+def test_hkt_memory_v5_retrieve_entrypoint_survives_read_only_lifecycle(tmp_path):
+    repo_root = Path(__file__).parent.parent
+    memory_dir = tmp_path / "memory"
+    lifecycle_dir = memory_dir / "_lifecycle"
+    lifecycle_dir.mkdir(parents=True, exist_ok=True)
+    events_path = lifecycle_dir / "events.jsonl"
+    events_path.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "type": "capture",
+                "memory_id": "x",
+                "scope": "topic:test",
+                "data": {},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(lifecycle_dir, 0o555)
+    os.chmod(events_path, 0o444)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "hkt_memory_v5.py"),
+                "--memory-dir",
+                str(memory_dir),
+                "retrieve",
+                "--query",
+                "test",
+                "--layer",
+                "all",
+                "--limit",
+                "1",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        os.chmod(events_path, 0o644)
+        os.chmod(lifecycle_dir, 0o755)
+
+    assert result.returncode == 0, result.stderr
+    assert "PermissionError" not in result.stderr
+    assert "Lifecycle IO degraded" in result.stdout
+
+
+def test_store_l2_survives_read_only_lifecycle_directory(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    lifecycle = memory.layers.lifecycle
+    lifecycle.manifest_path.write_text("{}", encoding="utf-8")
+    lifecycle.state_path.write_text("{}", encoding="utf-8")
+    lifecycle.events_path.write_text("", encoding="utf-8")
+    os.chmod(lifecycle.lifecycle_dir, 0o555)
+    os.chmod(lifecycle.manifest_path, 0o444)
+    os.chmod(lifecycle.state_path, 0o444)
+    os.chmod(lifecycle.events_path, 0o444)
+    try:
+        stored = memory.store(
+            content="生命周期目录只读时，L2 写入仍应继续。",
+            title="只读生命周期目录",
+            topic="tools",
+            layer="L2",
+        )
+    finally:
+        os.chmod(lifecycle.events_path, 0o644)
+        os.chmod(lifecycle.state_path, 0o644)
+        os.chmod(lifecycle.manifest_path, 0o644)
+        os.chmod(lifecycle.lifecycle_dir, 0o755)
+
+    assert stored["L2"]
+    assert memory.layers.lifecycle.get_memory(stored["L2"]) is not None
+    assert memory.layers.lifecycle.get_stats()["io_degraded"] is True
