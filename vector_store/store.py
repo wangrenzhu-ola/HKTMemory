@@ -286,33 +286,30 @@ class VectorStore:
         """更新访问计数"""
         if not doc_ids:
             return
-        
+
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            for doc_id in doc_ids:
-                cursor.execute("""
-                    UPDATE vectors
-                    SET access_count = access_count + 1
-                    WHERE id = ?
-                """, (doc_id,))
-            
-            conn.commit()
-            conn.close()
-        except:
-            pass
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                for doc_id in doc_ids:
+                    cursor.execute("""
+                        UPDATE vectors
+                        SET access_count = access_count + 1
+                        WHERE id = ?
+                    """, (doc_id,))
+                conn.commit()
+        except Exception as e:
+            print(f"Error updating access count: {e}")
     
     def delete(self, doc_id: str) -> bool:
         """删除文档"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM vectors WHERE id = ?", (doc_id,))
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM vectors WHERE id = ?", (doc_id,))
+                conn.commit()
             return True
-        except:
+        except Exception as e:
+            print(f"Error deleting vector: {e}")
             return False
     
     def get_stats(self) -> Dict[str, Any]:

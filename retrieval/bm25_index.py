@@ -167,28 +167,26 @@ class BM25Index:
         try:
             # 分词处理
             tokenized_content = self._tokenize_chinese(content)
-            
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                INSERT OR REPLACE INTO documents 
-                (id, content, metadata, scope, agent_id, project_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                doc_id,
-                tokenized_content,
-                json.dumps(metadata or {}),
-                scope,
-                agent_id,
-                project_id,
-                datetime.utcnow().isoformat()
-            ))
-            
-            conn.commit()
-            conn.close()
+            metadata_json = json.dumps(metadata or {})
+
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO documents
+                    (id, content, metadata, scope, agent_id, project_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    doc_id,
+                    tokenized_content,
+                    metadata_json,
+                    scope,
+                    agent_id,
+                    project_id,
+                    datetime.utcnow().isoformat()
+                ))
+                conn.commit()
             return True
-            
+
         except Exception as e:
             print(f"Error adding document to BM25 index: {e}")
             return False
@@ -221,11 +219,11 @@ class BM25Index:
             safe_query = " ".join(safe_tokens)
             if not safe_query:
                 return []
-            
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # 构建WHERE子句
+
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                # 构建WHERE子句
             where_clauses = []
             params = []
             
@@ -269,21 +267,21 @@ class BM25Index:
                     ORDER BY rank DESC
                     LIMIT ?
                 """, [safe_query] + params + [top_k])
-            
-            rows = cursor.fetchall()
-            conn.close()
-            
+
+                rows = cursor.fetchall()
+
+            # 在 with 块外处理结果
             results = []
             for row in rows:
                 doc_id, content, metadata_json, scope, agent, project, created, score = row
-                
+
                 # 转换FTS5的bm25分数（越小越好）到统一空间（越大越好）
                 if self._use_fts5:
                     # bm25返回负数，绝对值越大相关性越高
                     normalized_score = 1.0 / (1.0 + abs(score))
                 else:
                     normalized_score = score
-                
+
                 results.append({
                     'id': doc_id,
                     'content': content,
@@ -294,7 +292,7 @@ class BM25Index:
                     'project_id': project,
                     'created_at': created
                 })
-            
+
             return results
             
         except Exception as e:
@@ -312,15 +310,12 @@ class BM25Index:
             是否成功
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-            
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+                conn.commit()
             return True
-            
+
         except Exception as e:
             print(f"Error deleting document: {e}")
             return False
@@ -341,33 +336,32 @@ class BM25Index:
             是否成功
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # 获取现有文档
-            cursor.execute("SELECT content, metadata FROM documents WHERE id = ?", (doc_id,))
-            row = cursor.fetchone()
-            
-            if not row:
-                return False
-            
-            old_content, old_metadata_json = row
-            old_metadata = json.loads(old_metadata_json)
-            
-            # 更新
-            new_content = self._tokenize_chinese(content) if content else old_content
-            new_metadata = {**old_metadata, **(metadata or {})}
-            
-            cursor.execute("""
-                UPDATE documents 
-                SET content = ?, metadata = ?, updated_at = ?
-                WHERE id = ?
-            """, (new_content, json.dumps(new_metadata), datetime.utcnow().isoformat(), doc_id))
-            
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                # 获取现有文档
+                cursor.execute("SELECT content, metadata FROM documents WHERE id = ?", (doc_id,))
+                row = cursor.fetchone()
+
+                if not row:
+                    return False
+
+                old_content, old_metadata_json = row
+                old_metadata = json.loads(old_metadata_json)
+
+                # 更新
+                new_content = self._tokenize_chinese(content) if content else old_content
+                new_metadata = {**old_metadata, **(metadata or {})}
+
+                cursor.execute("""
+                    UPDATE documents
+                    SET content = ?, metadata = ?, updated_at = ?
+                    WHERE id = ?
+                """, (new_content, json.dumps(new_metadata), datetime.utcnow().isoformat(), doc_id))
+
+                conn.commit()
             return True
-            
+
         except Exception as e:
             print(f"Error updating document: {e}")
             return False
@@ -375,46 +369,36 @@ class BM25Index:
     def get_stats(self) -> Dict[str, Any]:
         """获取索引统计信息"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*) FROM documents")
-            total = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT scope, COUNT(*) FROM documents GROUP BY scope")
-            by_scope = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            fts_version = None
-            
-            conn.close()
-            
-            return {
-                'total_documents': total,
-                'by_scope': by_scope,
-                'fts_version': 'FTS5' if self._use_fts5 else 'FTS4',
-                'has_jieba': self._has_jieba,
-                'db_path': str(self.db_path)
-            }
-            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute("SELECT COUNT(*) FROM documents")
+                total = cursor.fetchone()[0]
+
+                cursor.execute("SELECT scope, COUNT(*) FROM documents GROUP BY scope")
+                by_scope = {row[0]: row[1] for row in cursor.fetchall()]
+
+                return {
+                    'total_documents': total,
+                    'by_scope': by_scope,
+                    'fts_version': 'FTS5' if self._use_fts5 else 'FTS4',
+                    'has_jieba': self._has_jieba,
+                    'db_path': str(self.db_path)
+                }
+
         except Exception as e:
             return {'error': str(e)}
     
     def optimize(self):
         """优化索引（清理碎片）"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            if self._use_fts5:
-                cursor.execute("INSERT INTO fts_index(fts_index) VALUES ('optimize')")
-            else:
-                cursor.execute("INSERT INTO fts_index(fts_index) VALUES ('optimize')")
-            
-            conn.commit()
-            conn.close()
-            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                if self._use_fts5:
+                    cursor.execute("INSERT INTO fts_index(fts_index) VALUES ('optimize')")
+                else:
+                    cursor.execute("INSERT INTO fts_index(fts_index) VALUES ('optimize')")
+                conn.commit()
+
         except Exception as e:
             print(f"Error optimizing index: {e}")
-
-
-import json  # 确保在文件末尾导入
