@@ -529,5 +529,29 @@ def test_store_l2_survives_read_only_lifecycle_directory(tmp_path):
         os.chmod(lifecycle.lifecycle_dir, 0o755)
 
     assert stored["L2"]
-    assert memory.layers.lifecycle.get_memory(stored["L2"]) is not None
+    assert stored["lifecycle_persisted"] is False
+    assert stored["lifecycle_error"]["operation"] == "write"
+    assert memory.layers.lifecycle.get_memory(stored["L2"]) is None
     assert memory.layers.lifecycle.get_stats()["io_degraded"] is True
+
+
+def test_feedback_reports_state_persistence_failure(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    lifecycle = memory.layers.lifecycle
+    lifecycle.state_path.write_text("{}", encoding="utf-8")
+    os.chmod(lifecycle.lifecycle_dir, 0o555)
+    os.chmod(lifecycle.state_path, 0o444)
+    try:
+        result = memory.feedback(
+            label="missing",
+            topic="tools",
+            query="生命周期状态写回",
+            note="state 文件只读",
+        )
+    finally:
+        os.chmod(lifecycle.state_path, 0o644)
+        os.chmod(lifecycle.lifecycle_dir, 0o755)
+
+    assert result["success"] is False
+    assert result["persisted"] is False
+    assert result["last_io_error"]["path"].endswith("state.json")

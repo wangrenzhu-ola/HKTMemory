@@ -208,8 +208,9 @@ class LayerManagerV5:
                 )
 
         entry = self.l2.get_entry(l2_id)
+        lifecycle_result: Optional[Dict[str, Any]] = None
         if entry:
-            self.lifecycle.register_memory(
+            lifecycle_result = self.lifecycle.register_memory(
                 memory_id=l2_id,
                 title=entry.get("title", title or "Untitled"),
                 topic=entry.get("topic", topic),
@@ -222,6 +223,7 @@ class LayerManagerV5:
             prune_result = {"triggered": False, "pruned": []}
 
         result = {"L2": l2_id}
+        self._attach_lifecycle_status(result, lifecycle_result, prune_result)
         if prune_result.get("triggered"):
             result["pruned"] = prune_result.get("pruned", [])
         return result
@@ -252,8 +254,9 @@ class LayerManagerV5:
             result = {"L2": l2_id}
 
         entry = self.l2.get_entry(l2_id)
+        lifecycle_result: Optional[Dict[str, Any]] = None
         if entry:
-            self.lifecycle.register_memory(
+            lifecycle_result = self.lifecycle.register_memory(
                 memory_id=l2_id,
                 title=entry.get("title", f"Episode: {episode_type}"),
                 topic=entry.get("topic", topic),
@@ -262,6 +265,7 @@ class LayerManagerV5:
                 metadata=entry.get("metadata", {}),
             )
             prune_result = self.lifecycle.prune_scope(entry.get("scope", f"topic:{topic}"))
+            self._attach_lifecycle_status(result, lifecycle_result, prune_result)
             if prune_result.get("triggered"):
                 result["pruned"] = prune_result.get("pruned", [])
                 result["aggregate_rebuild"] = self.rebuild_aggregates()
@@ -297,8 +301,9 @@ class LayerManagerV5:
             result = {"L2": l2_id}
 
         entry = self.l2.get_entry(l2_id)
+        lifecycle_result: Optional[Dict[str, Any]] = None
         if entry:
-            self.lifecycle.register_memory(
+            lifecycle_result = self.lifecycle.register_memory(
                 memory_id=l2_id,
                 title=entry.get("title", title),
                 topic=entry.get("topic", topic),
@@ -307,6 +312,7 @@ class LayerManagerV5:
                 metadata={**entry.get("metadata", {}), "importance": importance},
             )
             prune_result = self.lifecycle.prune_scope(entry.get("scope", f"topic:{topic}"))
+            self._attach_lifecycle_status(result, lifecycle_result, prune_result)
             if prune_result.get("triggered"):
                 result["pruned"] = prune_result.get("pruned", [])
                 result["aggregate_rebuild"] = self.rebuild_aggregates()
@@ -664,8 +670,32 @@ class LayerManagerV5:
             if self.lifecycle.is_visible(entry.get("id"), include_archived=include_archived)
         ]
         result = self.trigger.rebuild_from_entries(entries)
-        self.lifecycle.mark_rebuild()
-        return {**result, "source_entries": len(entries), "include_archived": include_archived}
+        lifecycle_persisted = self.lifecycle.mark_rebuild()
+        payload = {**result, "source_entries": len(entries), "include_archived": include_archived}
+        if not lifecycle_persisted:
+            payload["lifecycle_persisted"] = False
+            payload["lifecycle_error"] = "lifecycle state persistence failed"
+        return payload
+
+    def _attach_lifecycle_status(
+        self,
+        result: Dict[str, Any],
+        lifecycle_result: Optional[Dict[str, Any]],
+        prune_result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        lifecycle_payloads = [payload for payload in (lifecycle_result, prune_result) if payload]
+        if not lifecycle_payloads:
+            return
+        persisted = all(bool(payload.get("persisted", True)) for payload in lifecycle_payloads)
+        if persisted:
+            return
+        result["lifecycle_persisted"] = False
+        last_error = next(
+            (payload.get("last_io_error") for payload in reversed(lifecycle_payloads) if payload.get("last_io_error")),
+            None,
+        )
+        if last_error is not None:
+            result["lifecycle_error"] = last_error
 
     def _sort_by_lifecycle(self, items: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
         ranked = sorted(

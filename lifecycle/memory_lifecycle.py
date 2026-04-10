@@ -1,5 +1,6 @@
 import json
 import math
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -64,10 +65,20 @@ class MemoryLifecycleManager:
             "pinned": bool(metadata.get("pinned", current.get("pinned", False))),
             "metadata": {**current.get("metadata", {}), **metadata},
         }
+        previous_manifest = deepcopy(self._manifest)
         self._manifest[memory_id] = entry
-        self._save_manifest()
+        if not self._save_manifest():
+            self._manifest = previous_manifest
+            return self._with_persistence_status(
+                {
+                    **entry,
+                    "success": False,
+                    "error": "lifecycle manifest persistence failed",
+                },
+                persisted=False,
+            )
         self.record_event("capture", memory_id=memory_id, scope=scope, data={"status": entry["status"]})
-        return entry
+        return self._with_persistence_status({**entry, "success": True}, persisted=True)
 
     def ensure_registered(
         self,
@@ -79,7 +90,7 @@ class MemoryLifecycleManager:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if memory_id in self._manifest:
-            return self._manifest[memory_id]
+            return self._with_persistence_status(dict(self._manifest[memory_id]), persisted=True)
         return self.register_memory(
             memory_id=memory_id,
             title=title,
@@ -95,7 +106,7 @@ class MemoryLifecycleManager:
             memory_id = entry.get("id")
             if not memory_id or memory_id in self._manifest:
                 continue
-            self.register_memory(
+            result = self.register_memory(
                 memory_id=memory_id,
                 title=entry.get("title", memory_id),
                 topic=entry.get("topic", "general"),
@@ -103,11 +114,14 @@ class MemoryLifecycleManager:
                 source_path=entry.get("source_path", ""),
                 metadata=entry.get("metadata", {}),
             )
-            created += 1
+            if result.get("persisted", False):
+                created += 1
         return created
 
     def touch(self, memory_ids: List[str], event_type: str = "recall") -> None:
         now = self._now()
+        previous_manifest = deepcopy(self._manifest)
+        touched: List[Tuple[str, Optional[str]]] = []
         for memory_id in memory_ids:
             entry = self._manifest.get(memory_id)
             if not entry:
@@ -115,9 +129,12 @@ class MemoryLifecycleManager:
             entry["last_accessed"] = now
             entry["updated_at"] = now
             entry["access_count"] = entry.get("access_count", 0) + 1
-            self.record_event(event_type, memory_id=memory_id, scope=entry.get("scope"), data={})
-        if memory_ids:
-            self._save_manifest()
+            touched.append((memory_id, entry.get("scope")))
+        if touched and not self._save_manifest():
+            self._manifest = previous_manifest
+            return
+        for memory_id, scope in touched:
+            self.record_event(event_type, memory_id=memory_id, scope=scope, data={})
 
     def filter_active_ids(self, memory_ids: List[str], include_archived: bool = False) -> List[str]:
         allowed: List[str] = []
@@ -149,52 +166,89 @@ class MemoryLifecycleManager:
         entry = self._manifest.get(memory_id)
         if not entry:
             return {"success": False, "error": f"Unknown memory: {memory_id}"}
+        previous_manifest = deepcopy(self._manifest)
         if force:
             entry["status"] = "deleted"
             entry["updated_at"] = self._now()
+            if not self._save_manifest():
+                self._manifest = previous_manifest
+                return self._with_persistence_status(
+                    {"success": False, "memory_id": memory_id, "mode": "hard", "error": "lifecycle manifest persistence failed"},
+                    persisted=False,
+                )
             self.record_event("forget", memory_id=memory_id, scope=entry.get("scope"), data={"mode": "hard"})
-            self._save_manifest()
-            return {"success": True, "memory_id": memory_id, "mode": "hard", "status": "deleted"}
+            return self._with_persistence_status(
+                {"success": True, "memory_id": memory_id, "mode": "hard", "status": "deleted"},
+                persisted=True,
+            )
         entry["status"] = "disabled"
         entry["updated_at"] = self._now()
+        if not self._save_manifest():
+            self._manifest = previous_manifest
+            return self._with_persistence_status(
+                {"success": False, "memory_id": memory_id, "mode": "soft", "error": "lifecycle manifest persistence failed"},
+                persisted=False,
+            )
         self.record_event("forget", memory_id=memory_id, scope=entry.get("scope"), data={"mode": "soft"})
-        self._save_manifest()
-        return {"success": True, "memory_id": memory_id, "mode": "soft", "status": "disabled"}
+        return self._with_persistence_status(
+            {"success": True, "memory_id": memory_id, "mode": "soft", "status": "disabled"},
+            persisted=True,
+        )
 
     def archive(self, memory_id: str, reason: str = "prune") -> Dict[str, Any]:
         entry = self._manifest.get(memory_id)
         if not entry:
             return {"success": False, "error": f"Unknown memory: {memory_id}"}
+        previous_manifest = deepcopy(self._manifest)
         entry["status"] = "archived"
         entry["updated_at"] = self._now()
+        if not self._save_manifest():
+            self._manifest = previous_manifest
+            return self._with_persistence_status(
+                {"success": False, "memory_id": memory_id, "error": "lifecycle manifest persistence failed"},
+                persisted=False,
+            )
         self.record_event("archive", memory_id=memory_id, scope=entry.get("scope"), data={"reason": reason})
-        self._save_manifest()
-        return {"success": True, "memory_id": memory_id, "status": "archived"}
+        return self._with_persistence_status({"success": True, "memory_id": memory_id, "status": "archived"}, persisted=True)
 
     def restore(self, memory_id: str) -> Dict[str, Any]:
         entry = self._manifest.get(memory_id)
         if not entry:
             return {"success": False, "error": f"Unknown memory: {memory_id}"}
+        previous_manifest = deepcopy(self._manifest)
         entry["status"] = "active"
         entry["updated_at"] = self._now()
+        if not self._save_manifest():
+            self._manifest = previous_manifest
+            return self._with_persistence_status(
+                {"success": False, "memory_id": memory_id, "error": "lifecycle manifest persistence failed"},
+                persisted=False,
+            )
         self.record_event("restore", memory_id=memory_id, scope=entry.get("scope"), data={})
-        self._save_manifest()
-        return {"success": True, "memory_id": memory_id, "status": "active"}
+        return self._with_persistence_status({"success": True, "memory_id": memory_id, "status": "active"}, persisted=True)
 
     def delete_manifest_entry(self, memory_id: str) -> None:
         if memory_id in self._manifest:
+            previous_manifest = deepcopy(self._manifest)
             del self._manifest[memory_id]
-            self._save_manifest()
+            if not self._save_manifest():
+                self._manifest = previous_manifest
 
     def set_pinned(self, memory_id: str, pinned: bool) -> Dict[str, Any]:
         entry = self._manifest.get(memory_id)
         if not entry:
             return {"success": False, "error": f"Unknown memory: {memory_id}"}
+        previous_manifest = deepcopy(self._manifest)
         entry["pinned"] = bool(pinned)
         entry["updated_at"] = self._now()
+        if not self._save_manifest():
+            self._manifest = previous_manifest
+            return self._with_persistence_status(
+                {"success": False, "memory_id": memory_id, "error": "lifecycle manifest persistence failed"},
+                persisted=False,
+            )
         self.record_event("pin", memory_id=memory_id, scope=entry.get("scope"), data={"pinned": bool(pinned)})
-        self._save_manifest()
-        return {"success": True, "memory_id": memory_id, "pinned": bool(pinned)}
+        return self._with_persistence_status({"success": True, "memory_id": memory_id, "pinned": bool(pinned)}, persisted=True)
 
     def set_importance(self, memory_id: str, importance: str) -> Dict[str, Any]:
         if importance not in {"high", "medium", "low"}:
@@ -202,16 +256,22 @@ class MemoryLifecycleManager:
         entry = self._manifest.get(memory_id)
         if not entry:
             return {"success": False, "error": f"Unknown memory: {memory_id}"}
+        previous_manifest = deepcopy(self._manifest)
         entry["importance"] = importance
         entry["updated_at"] = self._now()
+        if not self._save_manifest():
+            self._manifest = previous_manifest
+            return self._with_persistence_status(
+                {"success": False, "memory_id": memory_id, "error": "lifecycle manifest persistence failed"},
+                persisted=False,
+            )
         self.record_event(
             "importance",
             memory_id=memory_id,
             scope=entry.get("scope"),
             data={"importance": importance},
         )
-        self._save_manifest()
-        return {"success": True, "memory_id": memory_id, "importance": importance}
+        return self._with_persistence_status({"success": True, "memory_id": memory_id, "importance": importance}, persisted=True)
 
     def record_feedback(
         self,
@@ -230,6 +290,7 @@ class MemoryLifecycleManager:
             return {"success": False, "error": f"Unknown memory: {memory_id}"}
 
         feedback_stats = None
+        previous_manifest = deepcopy(self._manifest)
         if entry:
             feedback_stats = self._normalize_feedback_stats(
                 entry.get("feedback_stats"),
@@ -239,27 +300,54 @@ class MemoryLifecycleManager:
             entry["feedback_stats"] = feedback_stats
             entry["helpful_count"] = feedback_stats["useful"]
             entry["updated_at"] = self._now()
-            self._save_manifest()
+            if not self._save_manifest():
+                self._manifest = previous_manifest
+                return self._with_persistence_status(
+                    {"success": False, "label": label, "memory_id": memory_id, "scope": resolved_scope, "error": "lifecycle manifest persistence failed"},
+                    persisted=False,
+                )
 
-        scope_feedback = self._increment_scope_feedback(resolved_scope, label)
+        previous_state = deepcopy(self._state)
+        scope_feedback, state_saved = self._increment_scope_feedback(resolved_scope, label)
+        if not state_saved:
+            self._state = previous_state
+            return self._with_persistence_status(
+                {
+                    "success": False,
+                    "label": label,
+                    "memory_id": memory_id,
+                    "scope": resolved_scope,
+                    "feedback_stats": feedback_stats,
+                    "scope_feedback": scope_feedback,
+                    "error": "lifecycle state persistence failed",
+                },
+                persisted=False,
+            )
         self.record_event(
             "feedback",
             memory_id=memory_id,
             scope=resolved_scope,
             data={"label": label, "note": note, "query": query, "topic": topic},
         )
-        return {
-            "success": True,
-            "label": label,
-            "memory_id": memory_id,
-            "scope": resolved_scope,
-            "feedback_stats": feedback_stats,
-            "scope_feedback": scope_feedback,
-        }
+        return self._with_persistence_status(
+            {
+                "success": True,
+                "label": label,
+                "memory_id": memory_id,
+                "scope": resolved_scope,
+                "feedback_stats": feedback_stats,
+                "scope_feedback": scope_feedback,
+            },
+            persisted=True,
+        )
 
-    def mark_rebuild(self) -> None:
+    def mark_rebuild(self) -> bool:
+        previous_state = deepcopy(self._state)
         self._state["last_rebuild_at"] = self._now()
-        self._save_state()
+        if not self._save_state():
+            self._state = previous_state
+            return False
+        return True
 
     def cleanup_events(self, dry_run: bool = False, scope: Optional[str] = None) -> Dict[str, Any]:
         retention_days = int(self.config.get("effectivenessEventsDays", 90))
@@ -287,27 +375,35 @@ class MemoryLifecycleManager:
         for event in expired:
             key = event.get("scope") or "unknown"
             scope_breakdown[key] = scope_breakdown.get(key, 0) + 1
+        persisted = True
         if not dry_run and expired:
-            self._write_events(kept)
-            self._state["last_cleanup_at"] = self._now()
-            self._save_state()
+            persisted = self._write_events(kept)
+            if persisted:
+                previous_state = deepcopy(self._state)
+                self._state["last_cleanup_at"] = self._now()
+                if not self._save_state():
+                    self._state = previous_state
+                    persisted = False
         self.record_event(
             "cleanup",
             scope=scope,
             data={"dry_run": dry_run, "deleted_count": len(expired), "retention_days": retention_days},
         )
-        return {
-            "success": True,
+        result = {
+            "success": persisted,
             "dry_run": dry_run,
             "retention_days": retention_days,
             "deleted_count": len(expired),
             "scope_breakdown": scope_breakdown,
             "sample": expired[:5],
         }
+        if not persisted:
+            result["error"] = "lifecycle cleanup persistence failed"
+        return self._with_persistence_status(result, persisted=persisted)
 
     def cleanup_expired_events_on_startup(self) -> Dict[str, Any]:
         if not self.enabled:
-            return {"success": True, "deleted_count": 0, "dry_run": False}
+            return self._with_persistence_status({"success": True, "deleted_count": 0, "dry_run": False}, persisted=True)
         return self.cleanup_events(dry_run=False)
 
     def prune_scope(self, scope: str) -> Dict[str, Any]:
@@ -317,11 +413,12 @@ class MemoryLifecycleManager:
             if entry.get("scope") == scope and entry.get("status", "active") == "active"
         ]
         if len(active_entries) <= max_entries:
-            return {"scope": scope, "triggered": False, "pruned": []}
+            return self._with_persistence_status({"scope": scope, "triggered": False, "pruned": []}, persisted=True)
         excess = len(active_entries) - max_entries
         ordered = sorted(active_entries, key=self._prune_score)
         pruned: List[str] = []
         mode = self.config.get("pruneMode", "archive")
+        previous_manifest = deepcopy(self._manifest)
         for entry in ordered:
             if len(pruned) >= excess:
                 break
@@ -334,9 +431,16 @@ class MemoryLifecycleManager:
             entry["updated_at"] = self._now()
             pruned.append(entry["memory_id"])
             self.record_event("prune", memory_id=entry["memory_id"], scope=scope, data={"mode": mode})
+        persisted = True
         if pruned:
-            self._save_manifest()
-        return {"scope": scope, "triggered": bool(pruned), "pruned": pruned, "mode": mode}
+            if not self._save_manifest():
+                self._manifest = previous_manifest
+                persisted = False
+                pruned = []
+        result = {"scope": scope, "triggered": bool(pruned), "pruned": pruned, "mode": mode}
+        if not persisted:
+            result["error"] = "lifecycle manifest persistence failed"
+        return self._with_persistence_status(result, persisted=persisted)
 
     def list_scope_counts(self) -> Dict[str, int]:
         counts: Dict[str, int] = {}
@@ -517,6 +621,13 @@ class MemoryLifecycleManager:
         }
         print(f"⚠️ Lifecycle IO degraded during {operation}: {path} ({error})")
 
+    def _with_persistence_status(self, result: Dict[str, Any], persisted: bool) -> Dict[str, Any]:
+        enriched = dict(result)
+        enriched["persisted"] = persisted
+        enriched["io_degraded"] = self._io_degraded
+        enriched["last_io_error"] = dict(self._last_io_error) if self._last_io_error else None
+        return enriched
+
     def _parse_time(self, value: Optional[str]) -> Optional[datetime]:
         if not value:
             return None
@@ -577,13 +688,12 @@ class MemoryLifecycleManager:
                     continue
         return normalized
 
-    def _increment_scope_feedback(self, scope: str, label: str) -> Dict[str, int]:
+    def _increment_scope_feedback(self, scope: str, label: str) -> Tuple[Dict[str, int], bool]:
         scope_feedback = self._state.setdefault("scope_feedback", {})
         normalized = self._normalize_scope_feedback(scope_feedback.get(scope))
         normalized[label] += 1
         scope_feedback[scope] = normalized
-        self._save_state()
-        return normalized
+        return normalized, self._save_state()
 
     def _scope_feedback_count(self, scope: Optional[str], label: str) -> int:
         if not scope:
