@@ -83,6 +83,33 @@ class LayerManagerV5:
                 llm_provider=self._llm_provider
             )
         return self._trigger
+
+    def _resolve_title(self, title: Optional[str], content: str, topic: str) -> str:
+        explicit_title = (title or "").strip()
+        if explicit_title:
+            return explicit_title
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            heading_match = re.match(r"^#{1,6}\s+(.+?)\s*$", line)
+            if heading_match:
+                heading = heading_match.group(1).strip()
+                if heading:
+                    return heading
+            break
+
+        topic_title = (topic or "").strip()
+        if topic_title:
+            return topic_title
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if line:
+                return line[:80]
+
+        return "Untitled"
     
     def store(self,
               content: str,
@@ -106,21 +133,22 @@ class LayerManagerV5:
             各层生成的ID映射
         """
         metadata = metadata or {}
+        effective_title = self._resolve_title(title, content, topic)
         
         # 根据 layer 参数决定存储策略
         if layer == "L2":
-            result = self._store_l2_only(content, title, topic, metadata)
+            result = self._store_l2_only(content, effective_title, topic, metadata)
             if result.get("pruned"):
                 result["aggregate_rebuild"] = self.rebuild_aggregates()
             return result
         
         elif layer == "L1":
             # 存储到 L2，然后提取 L1
-            l2_result = self._store_l2_only(content, title, topic, metadata)
+            l2_result = self._store_l2_only(content, effective_title, topic, metadata)
             l1_result = self.trigger.on_l2_stored(
                 l2_id=l2_result['L2'],
                 content=content,
-                title=title,
+                title=effective_title,
                 topic=topic,
                 enable_l1=True,
                 enable_l0=False
@@ -132,11 +160,11 @@ class LayerManagerV5:
         
         elif layer == "L0":
             # 存储到 L2，然后提取 L0
-            l2_result = self._store_l2_only(content, title, topic, metadata)
+            l2_result = self._store_l2_only(content, effective_title, topic, metadata)
             l0_result = self.trigger.on_l2_stored(
                 l2_id=l2_result['L2'],
                 content=content,
-                title=title,
+                title=effective_title,
                 topic=topic,
                 enable_l1=False,
                 enable_l0=True
@@ -148,13 +176,13 @@ class LayerManagerV5:
         
         elif layer == "all":
             # ✅ v5.0 核心：存储 L2 并自动触发 L1/L0 提取
-            l2_result = self._store_l2_only(content, title, topic, metadata)
+            l2_result = self._store_l2_only(content, effective_title, topic, metadata)
             
             if auto_extract:
                 all_results = self.trigger.on_l2_stored(
                     l2_id=l2_result['L2'],
                     content=content,
-                    title=title,
+                    title=effective_title,
                     topic=topic,
                     enable_l1=True,
                     enable_l0=True
@@ -174,7 +202,7 @@ class LayerManagerV5:
         """仅存储到 L2 层"""
         content_lines = content.split('\n')
         l2_id = self.l2.store_daily(
-            title=title or "Untitled",
+            title=title,
             content_lines=content_lines,
             metadata={**metadata, "topic": topic}
         )
@@ -212,7 +240,7 @@ class LayerManagerV5:
         if entry:
             lifecycle_result = self.lifecycle.register_memory(
                 memory_id=l2_id,
-                title=entry.get("title", title or "Untitled"),
+                title=entry.get("title", title),
                 topic=entry.get("topic", topic),
                 layer_type=entry.get("type", "daily"),
                 source_path=entry.get("source_path", ""),

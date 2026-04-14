@@ -30,6 +30,33 @@ class LayerManager:
         
         # 初始化向量存储
         self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
+
+    @staticmethod
+    def _resolve_title(title: Optional[str], content: str, topic: str) -> str:
+        explicit_title = (title or "").strip()
+        if explicit_title:
+            return explicit_title
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("# "):
+                return line[2:].strip() or topic or "Untitled"
+            if line.startswith("## "):
+                return line[3:].strip() or topic or "Untitled"
+            break
+
+        topic_title = (topic or "").strip()
+        if topic_title:
+            return topic_title
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if line:
+                return line[:80]
+
+        return "Untitled"
     
     def store(self,
               content: str,
@@ -44,11 +71,12 @@ class LayerManager:
         """
         ids = {}
         metadata = metadata or {}
+        effective_title = self._resolve_title(title, content, topic)
         
         # Step 1: 始终存储到 L2 (Source of Truth)
         content_lines = content.split('\n')
         l2_id = self.l2.store_daily(
-            title=title or "Untitled",
+            title=effective_title,
             content_lines=content_lines,
             metadata=metadata
         )
@@ -57,7 +85,7 @@ class LayerManager:
         # Step 2: 如果是 all 模式，自动提取 L1
         if layer in ("L1", "all"):
             # 🔧 修复：自动生成 L1 摘要，不依赖 session_id/project_id
-            l1_summary = self._generate_l1_summary(content, title)
+            l1_summary = self._generate_l1_summary(content, effective_title)
             l1_id = self._store_l1_from_summary(
                 topic=topic,
                 summary=l1_summary,
@@ -69,7 +97,7 @@ class LayerManager:
         # Step 3: 如果是 all 模式，自动提取 L0
         if layer in ("L0", "all"):
             # 🔧 修复：生成真正的摘要，不只是截断
-            abstract = self._generate_smart_abstract(content, title, topic)
+            abstract = self._generate_smart_abstract(content, effective_title, topic)
             l0_id = self.l0.store(
                 content=abstract,
                 topic=topic,

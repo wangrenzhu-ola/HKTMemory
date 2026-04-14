@@ -35,6 +35,33 @@ class LayerManager:
         
         # 初始化向量存储
         self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
+
+    @staticmethod
+    def _resolve_title(title: Optional[str], content: str, topic: str) -> str:
+        explicit_title = (title or "").strip()
+        if explicit_title:
+            return explicit_title
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("# "):
+                return line[2:].strip() or topic or "Untitled"
+            if line.startswith("## "):
+                return line[3:].strip() or topic or "Untitled"
+            break
+
+        topic_title = (topic or "").strip()
+        if topic_title:
+            return topic_title
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if line:
+                return line[:80]
+
+        return "Untitled"
     
     def store(self,
               content: str,
@@ -56,12 +83,13 @@ class LayerManager:
             各层生成的ID映射
         """
         ids = {}
+        effective_title = self._resolve_title(title, content, topic)
         
         # 始终存储到L2 (Source of Truth)
         if layer in ("L2", "all"):
             content_lines = content.split('\n')
             l2_id = self.l2.store_daily(
-                title=title or "Untitled",
+                title=effective_title,
                 content_lines=content_lines,
                 metadata=metadata
             )
@@ -72,7 +100,7 @@ class LayerManager:
             if 'session_id' in metadata:
                 l1_id = self.l1.store_session(
                     session_id=metadata['session_id'],
-                    summary=title or content[:100] + "...",
+                    summary=effective_title or content[:100] + "...",
                     key_points=content.split('\n')[:5],
                     decisions=metadata.get('decisions', []),
                     metadata=metadata
@@ -81,7 +109,7 @@ class LayerManager:
             elif 'project_id' in metadata:
                 l1_id = self.l1.store_project(
                     project_id=metadata['project_id'],
-                    name=title or metadata.get('project_name', 'Unnamed'),
+                    name=effective_title or metadata.get('project_name', 'Unnamed'),
                     description=content[:200],
                     milestones=metadata.get('milestones', []),
                     status=metadata.get('status', 'active'),
