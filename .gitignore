@@ -7,3 +7,4 @@ memory/
 *.sqlite
 *.sqlite3
 backups/
+.env
