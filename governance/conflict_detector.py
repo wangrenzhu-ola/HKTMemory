@@ -84,9 +84,8 @@ class ConflictDetector:
 
     def _collect_memory_rows(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
-        for memory_id, manifest in sorted(self.lifecycle._manifest.items(), key=lambda item: item[0]):
-            if manifest.get("status", "active") != "active":
-                continue
+        active_memories = self.lifecycle.get_all_active_memories()
+        for memory_id, manifest in sorted(active_memories.items(), key=lambda item: item[0]):
             l2_entry = self.l2.get_entry(memory_id)
             if not l2_entry:
                 continue

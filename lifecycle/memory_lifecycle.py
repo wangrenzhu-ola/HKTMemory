@@ -534,6 +534,14 @@ class MemoryLifecycleManager:
             + recency
         )
 
+    def get_all_active_memories(self) -> Dict[str, Dict[str, Any]]:
+        active: Dict[str, Dict[str, Any]] = {}
+        for memory_id, entry in self._manifest.items():
+            if entry.get("status", "active") != "active":
+                continue
+            active[memory_id] = dict(entry)
+        return active
+
     def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
         return self._manifest.get(memory_id)
 
