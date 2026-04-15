@@ -37,7 +37,14 @@
     "enabled": true,
     "classifier": {
       "model": "glm-4-flash",
-      "categories": ["fact", "preference", "entity", "decision", "pattern", "constraint"],
+      "categories": [
+        "fact",
+        "preference",
+        "entity",
+        "decision",
+        "pattern",
+        "constraint"
+      ],
       "confidence_threshold": 0.7
     },
     "deduplication": {
@@ -102,8 +109,20 @@
   "graph": {
     "enabled": true,
     "temporal": true,
-    "entity_types": ["person", "organization", "project", "technology", "concept"],
-    "relation_types": ["uses", "depends_on", "created_by", "part_of", "related_to"]
+    "entity_types": [
+      "person",
+      "organization",
+      "project",
+      "technology",
+      "concept"
+    ],
+    "relation_types": [
+      "uses",
+      "depends_on",
+      "created_by",
+      "part_of",
+      "related_to"
+    ]
   },
   "automation": {
     "auto_capture": {
