@@ -25,6 +25,7 @@ class MemoryLifecycleManager:
             self.state_path,
             {"last_cleanup_at": None, "last_rebuild_at": None, "scope_feedback": {}},
         )
+        self._filter_count = 0
 
     @property
     def enabled(self) -> bool:
@@ -466,6 +467,7 @@ class MemoryLifecycleManager:
             "enabled": self.enabled,
             "statuses": status_counts,
             "total_memories": len(self._manifest),
+            "filter_count": self._filter_count,
             "scopes": self.list_scope_counts(),
             "event_ttl": {
                 "enabled": int(self.config.get("effectivenessEventsDays", 90)) > 0,
@@ -485,6 +487,9 @@ class MemoryLifecycleManager:
             "io_degraded": self._io_degraded,
             "last_io_error": dict(self._last_io_error) if self._last_io_error else None,
         }
+
+    def increment_filter_count(self) -> None:
+        self._filter_count += 1
 
     def rank_bonus(self, memory_id: Optional[str], scope: Optional[str] = None) -> float:
         entry = self._manifest.get(memory_id) if memory_id else None

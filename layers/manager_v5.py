@@ -25,6 +25,7 @@ from governance.errors import ErrorTracker
 from governance.learnings import LearningTracker
 from lifecycle.memory_lifecycle import MemoryLifecycleManager
 from vector_store.store import VectorStore
+from filters.noise_filter import NoiseFilter
 
 
 class LayerManagerV5:
@@ -66,6 +67,7 @@ class LayerManagerV5:
         self.lifecycle = MemoryLifecycleManager(self.base_path, self.config.get("lifecycle", {}))
         self.learnings = LearningTracker(self.base_path / "governance")
         self.errors = ErrorTracker(self.base_path / "governance")
+        self.noise_filter = NoiseFilter()
         
         # 触发器（延迟加载，避免循环导入）
         self._trigger = None
@@ -134,7 +136,12 @@ class LayerManagerV5:
         """
         metadata = metadata or {}
         effective_title = self._resolve_title(title, content, topic)
-        
+
+        # 噪声预过滤
+        if self.noise_filter.is_noise(content):
+            self.lifecycle.increment_filter_count()
+            return {"filtered": True, "reason": "content matches noise filter rules"}
+
         # 根据 layer 参数决定存储策略
         if layer == "L2":
             result = self._store_l2_only(content, effective_title, topic, metadata)

@@ -1,5 +1,5 @@
 """
-MCP Tools for HKT-Memory v4
+MCP Tools for HKT-Memory v5
 """
 
 import json
@@ -117,7 +117,7 @@ class MemoryTools:
         """
         return {
             "success": False,
-            "error": "Update operation not yet implemented in v4.0",
+            "error": "Update operation not yet implemented in v5.0",
             "memory_id": memory_id
         }
 
@@ -151,6 +151,32 @@ class MemoryTools:
             )
         except Exception as e:
             return {"success": False, "error": str(e), "memory_id": memory_id, "label": label}
+
+    def memory_restore(self, memory_id: str) -> Dict[str, Any]:
+        """
+        恢复软删除的记忆（disabled → active）
+
+        Args:
+            memory_id: 记忆ID
+        """
+        try:
+            result = self.layers.restore(memory_id=memory_id)
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e), "memory_id": memory_id}
+
+    def memory_cleanup(self, dry_run: bool = True, scope: Optional[str] = None) -> Dict[str, Any]:
+        """
+        清理过期事件日志
+
+        Args:
+            dry_run: 仅预览，不实际删除（默认 True）
+            scope: 可选 scope 过滤
+        """
+        try:
+            return self.layers.cleanup(dry_run=dry_run, scope=scope)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def memory_rebuild(self, include_archived: bool = False) -> Dict[str, Any]:
         try:

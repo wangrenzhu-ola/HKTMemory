@@ -63,19 +63,24 @@ class L2FullLayer:
         """
         if date is None:
             date = datetime.now().strftime('%Y-%m-%d')
-        
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        entry_id = f"{date}-{timestamp.replace(':', '')}"
-        
+
+        now = datetime.now()
+        timestamp = now.strftime('%H:%M:%S')
+        ms = now.strftime('%f')[:3]
+        entry_id = f"{date}-{timestamp.replace(':', '')}-{ms}"
+
         daily_file = self.daily_path / f"{date}.md"
-        
+
+        # 将唯一 id 写入 metadata，确保解析时可区分同一秒条目
+        metadata = dict(metadata) if metadata else {}
+        metadata["id"] = entry_id
+
         # 构建条目
         entry_content = f"\n### {title} ({timestamp})\n"
         for line in content_lines:
             entry_content += f"- {line}\n"
-        
-        if metadata:
-            entry_content += f"\n> Metadata: {json.dumps(metadata, ensure_ascii=False)}\n"
+
+        entry_content += f"\n> Metadata: {json.dumps(metadata, ensure_ascii=False)}\n"
         
         # 写入文件
         if daily_file.exists():
@@ -400,8 +405,9 @@ class L2FullLayer:
                 elif line.startswith("- "):
                     body_lines.append(line[2:])
             topic = metadata.get("topic", "general")
+            entry_id = metadata.get("id") or f"{daily_file.stem}-{time_str.replace(':', '')}"
             entries.append({
-                "id": f"{daily_file.stem}-{time_str.replace(':', '')}",
+                "id": entry_id,
                 "type": "daily",
                 "title": title,
                 "content": "\n".join(body_lines),

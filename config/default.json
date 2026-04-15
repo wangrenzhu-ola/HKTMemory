@@ -113,7 +113,8 @@
     "auto_recall": {
       "enabled": true,
       "top_k": 5,
-      "threshold": 0.3
+      "threshold": 0.3,
+      "max_tokens": 512
     }
   },
   "governance": {
