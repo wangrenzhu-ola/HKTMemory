@@ -21,6 +21,7 @@ class MemoryLifecycleManager:
         self.events_path = self.lifecycle_dir / "events.jsonl"
         self.state_path = self.lifecycle_dir / "state.json"
         self._manifest = self._load_json(self.manifest_path, {})
+        self._migrate_manifest_schema()
         self._state = self._load_json(
             self.state_path,
             {"last_cleanup_at": None, "last_rebuild_at": None, "scope_feedback": {}, "filter_count": 0},
@@ -562,6 +563,29 @@ class MemoryLifecycleManager:
         except OSError as error:
             self._handle_io_error("read", path, error)
             return default
+
+    def _migrate_manifest_schema(self) -> None:
+        if not isinstance(self._manifest, dict):
+            self._manifest = {}
+            return
+        changed = False
+        now = self._now()
+        for memory_id, entry in list(self._manifest.items()):
+            if not isinstance(entry, dict):
+                self._manifest[memory_id] = {}
+                entry = self._manifest[memory_id]
+                changed = True
+            if not entry.get("created_at"):
+                entry["created_at"] = now
+                changed = True
+            if not entry.get("last_accessed"):
+                entry["last_accessed"] = entry.get("created_at", now)
+                changed = True
+            if "access_count" not in entry:
+                entry["access_count"] = 0
+                changed = True
+        if changed:
+            self._save_manifest()
 
     def _save_manifest(self) -> bool:
         return self._write_text(

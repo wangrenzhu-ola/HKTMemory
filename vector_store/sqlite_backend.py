@@ -51,12 +51,20 @@ class SQLiteVectorBackend:
                     source TEXT,
                     layer TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_accessed TIMESTAMP,
                     access_count INTEGER DEFAULT 0
                 )
             """)
+            self._ensure_schema(cursor)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_layer ON vectors(layer)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_source ON vectors(source)")
             conn.commit()
+
+    def _ensure_schema(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute("PRAGMA table_info(vectors)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "last_accessed" not in columns:
+            cursor.execute("ALTER TABLE vectors ADD COLUMN last_accessed TIMESTAMP")
 
     def _rebuild_index_from_db(self):
         if not self._faiss_available:
@@ -149,13 +157,13 @@ class SQLiteVectorBackend:
                 cursor = conn.cursor()
                 if layer:
                     cursor.execute("""
-                        SELECT id, content, metadata, source, layer, access_count
+                        SELECT id, content, metadata, source, layer, access_count, last_accessed
                         FROM vectors
                         WHERE id IN ({}) AND layer = ?
                     """.format(",".join(["?"] * len(matched_ids))), (*matched_ids, layer))
                 else:
                     cursor.execute("""
-                        SELECT id, content, metadata, source, layer, access_count
+                        SELECT id, content, metadata, source, layer, access_count, last_accessed
                         FROM vectors
                         WHERE id IN ({})
                     """.format(",".join(["?"] * len(matched_ids))), matched_ids)
@@ -163,7 +171,7 @@ class SQLiteVectorBackend:
                 rows = cursor.fetchall()
                 results = []
                 for row in rows:
-                    doc_id, content, meta_json, source, doc_layer, access_count = row
+                    doc_id, content, meta_json, source, doc_layer, access_count, last_accessed = row
                     results.append({
                         "id": doc_id,
                         "content": content,
@@ -172,6 +180,7 @@ class SQLiteVectorBackend:
                         "source": source,
                         "layer": doc_layer,
                         "access_count": access_count,
+                        "last_accessed": last_accessed,
                     })
                 results.sort(key=lambda x: x["score"], reverse=True)
                 self._update_access_count([r["id"] for r in results[:top_k]])
@@ -186,18 +195,18 @@ class SQLiteVectorBackend:
             cursor = conn.cursor()
             if layer:
                 cursor.execute("""
-                    SELECT id, content, embedding, metadata, source, layer, access_count
+                    SELECT id, content, embedding, metadata, source, layer, access_count, last_accessed
                     FROM vectors WHERE layer = ?
                 """, (layer,))
             else:
                 cursor.execute("""
-                    SELECT id, content, embedding, metadata, source, layer, access_count
+                    SELECT id, content, embedding, metadata, source, layer, access_count, last_accessed
                     FROM vectors
                 """)
             rows = cursor.fetchall()
             results = []
             for row in rows:
-                doc_id, content, emb_bytes, meta_json, source, doc_layer, access_count = row
+                doc_id, content, emb_bytes, meta_json, source, doc_layer, access_count, last_accessed = row
                 doc_vec = np.array(json.loads(emb_bytes.decode("utf-8")), dtype="float32")
                 norm1 = np.linalg.norm(query_vec)
                 norm2 = np.linalg.norm(doc_vec)
@@ -212,6 +221,7 @@ class SQLiteVectorBackend:
                     "source": source,
                     "layer": doc_layer,
                     "access_count": access_count,
+                    "last_accessed": last_accessed,
                 })
             results.sort(key=lambda x: x["score"], reverse=True)
             self._update_access_count([r["id"] for r in results[:top_k]])
@@ -225,7 +235,10 @@ class SQLiteVectorBackend:
                 cursor = conn.cursor()
                 for doc_id in doc_ids:
                     cursor.execute("""
-                        UPDATE vectors SET access_count = access_count + 1 WHERE id = ?
+                        UPDATE vectors
+                        SET access_count = access_count + 1,
+                            last_accessed = CURRENT_TIMESTAMP
+                        WHERE id = ?
                     """, (doc_id,))
                 conn.commit()
         except Exception as e:

@@ -173,6 +173,33 @@ class HKTMv5:
     def rebuild(self, include_archived: bool = False) -> Dict[str, Any]:
         return self.layers.rebuild_aggregates(include_archived=include_archived)
 
+    def ingest_artifact(
+        self,
+        content: str,
+        source_mode: str,
+        artifact_type: str,
+        title: str = "",
+        topic: str = "closeout",
+        artifact_id: str = None,
+        source_uri: str = None,
+        layer: str = "L2",
+        auto_extract: bool = False,
+    ) -> Dict[str, Any]:
+        return self.layers.ingest_artifact(
+            content=content,
+            source_mode=source_mode,
+            artifact_type=artifact_type,
+            title=title,
+            topic=topic,
+            artifact_id=artifact_id,
+            source_uri=source_uri,
+            layer=layer,
+            auto_extract=auto_extract,
+        )
+
+    def conflict_scan(self, output_path: str = None) -> Dict[str, Any]:
+        return self.layers.scan_conflicts(output_path=output_path)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -294,6 +321,21 @@ def main():
 
     rebuild_parser = subparsers.add_parser("rebuild", help="物理重建并压缩 L0/L1 聚合文件")
     rebuild_parser.add_argument("--include-archived", action="store_true", help="是否包含 archived 记忆")
+
+    ingest_parser = subparsers.add_parser("ingest-artifact", help="统一入口写入 governed/compound 产物")
+    ingest_parser.add_argument("--content", help="产物文本内容")
+    ingest_parser.add_argument("--content-file", help="从文件读取产物内容")
+    ingest_parser.add_argument("--source-mode", choices=["governed", "compound"], required=True, help="来源模式")
+    ingest_parser.add_argument("--artifact-type", required=True, help="产物类型，如 spec/checklist/tasks/implementation/decision")
+    ingest_parser.add_argument("--title", default="", help="标题")
+    ingest_parser.add_argument("--topic", default="closeout", help="主题")
+    ingest_parser.add_argument("--artifact-id", help="可选业务主键")
+    ingest_parser.add_argument("--source-uri", help="可选来源 URI（文件路径/PR URL/Issue）")
+    ingest_parser.add_argument("--layer", choices=["L0", "L1", "L2", "all"], default="L2", help="写入层")
+    ingest_parser.add_argument("--auto-extract", action="store_true", help="是否自动提取 L1/L0")
+
+    conflict_parser = subparsers.add_parser("conflict-scan", help="扫描冲突并输出 MEMORY_CONFLICT.md")
+    conflict_parser.add_argument("--output", help="输出路径，默认 <memory-dir>/MEMORY_CONFLICT.md")
     
     # Test command
     test_parser = subparsers.add_parser("test", help="测试存储和检索")
@@ -512,6 +554,36 @@ def main():
         print("🧱 聚合重建结果\n")
         for key, value in result.items():
             print(f"   {key}: {value}")
+
+    elif args.command == "ingest-artifact":
+        payload = args.content
+        if args.content_file:
+            payload = Path(args.content_file).read_text(encoding="utf-8")
+        if not payload:
+            raise ValueError("ingest-artifact requires --content or --content-file")
+        result = memory.ingest_artifact(
+            content=payload,
+            source_mode=args.source_mode,
+            artifact_type=args.artifact_type,
+            title=args.title,
+            topic=args.topic,
+            artifact_id=args.artifact_id,
+            source_uri=args.source_uri,
+            layer=args.layer,
+            auto_extract=args.auto_extract,
+        )
+        print("📥 产物写入结果\n")
+        for key, value in result.items():
+            print(f"   {key}: {value}")
+
+    elif args.command == "conflict-scan":
+        result = memory.conflict_scan(output_path=args.output)
+        print("⚔️ 冲突扫描结果\n")
+        for key, value in result.items():
+            if key == "conflicts":
+                print(f"   conflicts: {len(value)} entries")
+            else:
+                print(f"   {key}: {value}")
     
     elif args.command == "test":
         print("🧪 运行测试...\n")

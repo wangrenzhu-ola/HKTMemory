@@ -214,8 +214,22 @@ hkt_memory_v5.py feedback --label useful --memory-id "2026-04-09-120000" --topic
 hkt_memory_v5.py feedback --label wrong --memory-id "2026-04-09-120000" --topic tools
 hkt_memory_v5.py feedback --label missing --topic tools --query "部署窗口"
 
+# 统一产物写入（governed / compound）
+hkt_memory_v5.py ingest-artifact --source-mode governed --artifact-type spec --artifact-id change-123 --source-uri openspec/changes/update/spec.md --content-file openspec/changes/update/spec.md
+hkt_memory_v5.py ingest-artifact --source-mode compound --artifact-type implementation --artifact-id closeout-123 --source-uri https://example.com/pr/123 --content "实施总结..."
+
+# 冲突扫描（输出 MEMORY_CONFLICT.md）
+hkt_memory_v5.py conflict-scan
+hkt_memory_v5.py conflict-scan --output /tmp/MEMORY_CONFLICT.md
+
 # 测试
 hkt_memory_v5.py test
+```
+
+每周扫描建议（cron/CI）:
+
+```bash
+0 3 * * 1 cd /path/to/HKTMemory && uv run scripts/hkt_memory_v5.py --memory-dir memory conflict-scan
 ```
 
 ---

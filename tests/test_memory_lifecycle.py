@@ -1,12 +1,15 @@
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lifecycle.weibull_decay import WeibullDecay, MemoryTier
 from scripts.hkt_memory_v5 import HKTMv5
 
 
@@ -580,3 +583,132 @@ def test_feedback_reports_state_persistence_failure(tmp_path):
     assert result["success"] is False
     assert result["persisted"] is False
     assert result["last_io_error"]["path"].endswith("state.json")
+
+
+def test_weibull_decay_decreases_and_access_boosts():
+    decay = WeibullDecay()
+    created_at = datetime.utcnow() - timedelta(days=40)
+    low_access = decay.calculate_decay(
+        tier=MemoryTier.WORKING,
+        created_at=created_at,
+        access_count=0,
+    )
+    high_access = decay.calculate_decay(
+        tier=MemoryTier.WORKING,
+        created_at=created_at,
+        access_count=20,
+    )
+    newer = decay.calculate_decay(
+        tier=MemoryTier.WORKING,
+        created_at=datetime.utcnow() - timedelta(days=5),
+        access_count=0,
+    )
+    assert newer >= low_access
+    assert high_access >= low_access
+
+
+def test_store_writes_commit_hash_when_memory_dir_is_in_git_repo():
+    repo_root = Path(__file__).parent.parent
+    with tempfile.TemporaryDirectory(dir=repo_root) as temp_dir:
+        memory = HKTMv5(memory_dir=temp_dir, llm_provider="zhipu")
+        memory.layers.vector_store = SimpleNamespace(add=lambda **kwargs: True)
+        stored = memory.store(
+            content="git repo provenance check",
+            title="repo provenance",
+            topic="tests",
+            layer="L2",
+        )
+        manifest = memory.layers.lifecycle.get_memory(stored["L2"])
+        commit_hash = manifest["metadata"].get("commit_hash")
+        assert isinstance(commit_hash, str)
+        assert re.match(r"^[0-9a-f]{40}$", commit_hash)
+
+
+def test_store_non_git_repo_does_not_fail_and_commit_hash_is_null(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    memory.layers.vector_store = SimpleNamespace(add=lambda **kwargs: True)
+    stored = memory.store(
+        content="non git provenance check",
+        title="non git provenance",
+        topic="tests",
+        layer="L2",
+    )
+    manifest = memory.layers.lifecycle.get_memory(stored["L2"])
+    assert manifest["metadata"].get("commit_hash") is None
+    assert manifest["metadata"].get("provenance_diagnostic")
+
+
+def test_ingest_artifact_is_idempotent_and_source_distinguishable(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    memory.layers.vector_store = SimpleNamespace(add=lambda **kwargs: True)
+
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text("# OpenSpec Spec\nREST API required.\n", encoding="utf-8")
+    governed = memory.ingest_artifact(
+        content=spec_path.read_text(encoding="utf-8"),
+        source_mode="governed",
+        artifact_type="spec",
+        title="OpenSpec spec",
+        source_uri=str(spec_path),
+        artifact_id="openspec-spec-1",
+    )
+    governed_duplicate = memory.ingest_artifact(
+        content=spec_path.read_text(encoding="utf-8"),
+        source_mode="governed",
+        artifact_type="spec",
+        title="OpenSpec spec",
+        source_uri=str(spec_path),
+        artifact_id="openspec-spec-1",
+    )
+    compound = memory.ingest_artifact(
+        content="Implementation summary: GraphQL gateway selected.",
+        source_mode="compound",
+        artifact_type="implementation",
+        title="Compound closeout",
+        source_uri="https://example.com/pr/1",
+        artifact_id="compound-closeout-1",
+    )
+
+    assert governed["deduplicated"] is False
+    assert governed_duplicate["deduplicated"] is True
+    assert compound["deduplicated"] is False
+
+    source_modes = {
+        item.get("metadata", {}).get("source_mode")
+        for item in memory.layers.lifecycle._manifest.values()
+        if item.get("metadata", {}).get("source_mode")
+    }
+    assert "governed" in source_modes
+    assert "compound" in source_modes
+
+
+def test_conflict_scan_generates_stable_report_with_provenance_fields(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    memory.layers.vector_store = SimpleNamespace(add=lambda **kwargs: True)
+
+    memory.ingest_artifact(
+        content="建议采用 REST API 提供对外服务。",
+        source_mode="governed",
+        artifact_type="decision",
+        title="API 决策 A",
+        artifact_id="decision-a",
+    )
+    memory.ingest_artifact(
+        content="建议采用 GraphQL 统一网关。",
+        source_mode="compound",
+        artifact_type="decision",
+        title="API 决策 B",
+        artifact_id="decision-b",
+    )
+
+    first = memory.conflict_scan()
+    second = memory.conflict_scan()
+    report_path = Path(first["report_path"])
+    text = report_path.read_text(encoding="utf-8")
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert first["conflict_count"] >= 1
+    assert first["conflicts"] == second["conflicts"]
+    assert "commit_hash=" in text
+    assert "pr_id=" in text
