@@ -871,17 +871,36 @@ class LayerManagerV5:
             result["lifecycle_error"] = last_error
 
     def _sort_by_lifecycle(self, items: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        retrieval_config = self.config.get("retrieval", {}) if isinstance(self.config, dict) else {}
+        lifecycle_weight = float(retrieval_config.get("lifecycle_weight", 0.05))
+
+        def resolve_lifecycle(item: Dict[str, Any]) -> float:
+            cached = item.get("_lifecycle_score")
+            if cached is not None:
+                return float(cached)
+            return float(
+                self.lifecycle.rank_bonus(
+                    item.get("source_l2") or item.get("id"),
+                    scope=item.get("scope") or (f"topic:{item.get('topic')}" if item.get("topic") else None),
+                )
+            )
+
+        def resolve_final(item: Dict[str, Any]) -> float:
+            hybrid = float(item.get("_hybrid_score", 0.0))
+            lifecycle = resolve_lifecycle(item)
+            final_score = hybrid + (lifecycle * lifecycle_weight)
+            item["_final_score"] = final_score
+            item["_lifecycle_score"] = lifecycle
+            return final_score
+
         ranked = sorted(
             items,
             key=lambda item: (
+                resolve_final(item),
                 item.get("_hybrid_score", 0.0),
                 item.get("_vector_score", 0.0),
                 item.get("_bm25_score", 0.0),
                 item.get("_match_score", 0.0),
-                self.lifecycle.rank_bonus(
-                    item.get("source_l2") or item.get("id"),
-                    scope=item.get("scope") or (f"topic:{item.get('topic')}" if item.get("topic") else None),
-                ),
                 item.get("timestamp", ""),
             ),
             reverse=True,
