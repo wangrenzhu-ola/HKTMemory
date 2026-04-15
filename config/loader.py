@@ -14,6 +14,7 @@ class ConfigLoader:
         if self.config_path.exists():
             config = json.loads(self.config_path.read_text(encoding="utf-8"))
         retrieval = config.setdefault("retrieval", {})
+        retrieval.setdefault("fusion_method", os.getenv("HKT_MEMORY_FUSION_METHOD", "rrf"))
         hybrid = retrieval.setdefault("hybrid", {})
         hybrid.setdefault("vector_weight", self._env_float("HKT_MEMORY_VECTOR_WEIGHT", 0.7))
         hybrid.setdefault("bm25_weight", self._env_float("HKT_MEMORY_BM25_WEIGHT", 0.3))

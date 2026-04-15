@@ -22,7 +22,7 @@ Tag：`v5.2.0`
 - **TASK-02**：MCP 工具端到端集成测试
   - 9 个核心工具覆盖通过（`tests/test_mcp_integration.py`）
   - MCP server 支持 JSON-RPC 2.0 / `tools/call` 格式
-  - capabilities 版本为 `HKT-Memory v5` / `5.0.0`
+-  - capabilities 版本为 `HKT-Memory v5` / `5.1.0`
 - **TASK-03**：Auto-Capture / Auto-Recall（Claude Code 钩子集成）
   - `hooks/auto_recall.py` + `hooks/auto_capture.py`
   - `.claude/settings.json` 配置了 `PreCompact` 和 `PostToolUse`

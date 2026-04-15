@@ -1,5 +1,5 @@
 {
-  "version": "5.0.0",
+  "version": "5.1.0",
   "name": "HKT-Memory",
   "description": "Production-grade long-term memory system with automatic L2->L1/L0 extraction and layered retrieval",
   "storage": {

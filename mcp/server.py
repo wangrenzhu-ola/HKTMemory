@@ -98,7 +98,7 @@ class MemoryMCPServer:
         """Get server capabilities"""
         return {
             "name": "HKT-Memory v5",
-            "version": "5.0.0",
+            "version": "5.1.0",
             "tools": [
                 {
                     "name": "memory_recall",

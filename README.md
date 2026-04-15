@@ -65,7 +65,7 @@ uv run scripts/hkt_memory_v5.py retrieve --query "API设计" --layer all
 └─────────────────────────────────────────────────────────────┘
 
 检索流程:
-Query → Adaptive → HybridFusion → Rerank → Lifecycle → MMR → Scope → Results
+Query → Intent → QueryExpansion → Vector/BM25 → RRF Fusion → Cosine Re-score → Dedup/Guarantee → Lifecycle → MMR → Scope → Results
 ```
 
 ## 三层记忆

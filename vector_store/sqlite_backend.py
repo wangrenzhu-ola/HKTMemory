@@ -7,6 +7,7 @@ Supports vector_backend: "sqlite" configuration for fast approximate search.
 import json
 import sqlite3
 import numpy as np
+from contextlib import closing
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -40,7 +41,7 @@ class SQLiteVectorBackend:
             self._faiss_available = False
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS vectors (
@@ -72,7 +73,7 @@ class SQLiteVectorBackend:
         dim = self.embedding_client.DIMENSIONS
         self._index = self._faiss.IndexFlatIP(dim)  # inner product = cosine for normalized vectors
         self._id_map = []
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, embedding FROM vectors")
             rows = cursor.fetchall()
@@ -97,7 +98,7 @@ class SQLiteVectorBackend:
             embedding = self.embedding_client.get_embedding(content)
             embedding_bytes = json.dumps(embedding).encode("utf-8")
 
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO vectors
@@ -153,7 +154,7 @@ class SQLiteVectorBackend:
                 # fallback to brute-force
                 return self._brute_force_search(query_vec, top_k, layer)
 
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 if layer:
                     cursor.execute("""
@@ -191,7 +192,7 @@ class SQLiteVectorBackend:
             return []
 
     def _brute_force_search(self, query_vec: np.ndarray, top_k: int, layer: Optional[str]) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             if layer:
                 cursor.execute("""
@@ -231,7 +232,7 @@ class SQLiteVectorBackend:
         if not doc_ids:
             return
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 for doc_id in doc_ids:
                     cursor.execute("""
@@ -246,7 +247,7 @@ class SQLiteVectorBackend:
 
     def delete(self, doc_id: str) -> bool:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM vectors WHERE id = ?", (doc_id,))
                 conn.commit()
@@ -259,7 +260,7 @@ class SQLiteVectorBackend:
 
     def get_stats(self) -> Dict[str, Any]:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM vectors")
                 total = cursor.fetchone()[0]
@@ -277,7 +278,7 @@ class SQLiteVectorBackend:
 
     def rebuild_from_files(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Rebuild index from filesystem entries (used by sync --rebuild-index)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM vectors")
             conn.commit()

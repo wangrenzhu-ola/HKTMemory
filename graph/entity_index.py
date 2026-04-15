@@ -5,6 +5,7 @@ Entity Index for Knowledge Graph MVP
 """
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -23,7 +24,7 @@ class EntityIndex:
         self._init_db()
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS entity_triples (
@@ -45,7 +46,7 @@ class EntityIndex:
 
     def add_triple(self, memory_id: str, subject: str, relation: str, obj: str) -> bool:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO entity_triples (memory_id, subject, relation, object)
@@ -67,7 +68,7 @@ class EntityIndex:
 
     def search_by_entity(self, name: str) -> List[Dict[str, Any]]:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT memory_id, subject, relation, object, created_at
@@ -92,7 +93,7 @@ class EntityIndex:
 
     def search_memory_ids_by_entity(self, name: str) -> List[str]:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT DISTINCT memory_id
@@ -107,7 +108,7 @@ class EntityIndex:
 
     def delete_by_memory(self, memory_id: str) -> bool:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     DELETE FROM entity_triples WHERE memory_id = ?
@@ -120,7 +121,7 @@ class EntityIndex:
 
     def get_stats(self) -> Dict[str, Any]:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM entity_triples")
                 total = cursor.fetchone()[0]

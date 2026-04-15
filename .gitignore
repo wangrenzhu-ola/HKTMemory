@@ -8,3 +8,5 @@ memory/
 *.sqlite3
 backups/
 .env
+.trae/
+.claude/

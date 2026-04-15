@@ -5,7 +5,7 @@ Vector Store with Zhipu AI Embeddings
 import os
 import json
 import sqlite3
-import numpy as np
+import math
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime
@@ -232,7 +232,6 @@ class VectorStore:
         try:
             # 生成查询向量
             query_vec = self.embedding_client.get_embedding(query)
-            query_vec = np.array(query_vec)
             
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -262,7 +261,7 @@ class VectorStore:
                 doc_id, content, embedding_bytes, metadata_json, source, doc_layer, access_count, last_accessed = row
                 
                 # 解析embedding
-                doc_vec = np.array(json.loads(embedding_bytes.decode('utf-8')))
+                doc_vec = json.loads(embedding_bytes.decode('utf-8'))
                 
                 # 计算余弦相似度
                 similarity = self._cosine_similarity(query_vec, doc_vec)
@@ -290,15 +289,22 @@ class VectorStore:
             print(f"Error searching vector store: {e}")
             return []
     
-    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """计算余弦相似度"""
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        
-        if norm1 == 0 or norm2 == 0:
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        norm1 = 0.0
+        norm2 = 0.0
+        dot = 0.0
+        n = min(len(vec1), len(vec2))
+        if n <= 0:
             return 0.0
-        
-        return float(np.dot(vec1, vec2) / (norm1 * norm2))
+        for idx in range(n):
+            a = float(vec1[idx])
+            b = float(vec2[idx])
+            dot += a * b
+            norm1 += a * a
+            norm2 += b * b
+        if norm1 == 0.0 or norm2 == 0.0:
+            return 0.0
+        return float(dot / (math.sqrt(norm1) * math.sqrt(norm2)))
     
     def _update_access_count(self, doc_ids: List[str]):
         """更新访问计数"""

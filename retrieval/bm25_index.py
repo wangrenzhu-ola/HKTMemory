@@ -9,6 +9,7 @@ import json
 import os
 import sqlite3
 import re
+from contextlib import closing
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
@@ -41,80 +42,66 @@ class BM25Index:
     
     def _init_db(self):
         """初始化数据库"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # 检查FTS5支持
-        cursor.execute("SELECT sqlite_compileoption_used('ENABLE_FTS5')")
-        has_fts5 = cursor.fetchone()[0]
-        
-        if not has_fts5:
-            # 降级到FTS4
-            self._use_fts5 = False
-        else:
-            self._use_fts5 = True
-        
-        # 创建文档表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                metadata TEXT DEFAULT '{}',
-                scope TEXT DEFAULT 'global',
-                agent_id TEXT,
-                project_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # 创建FTS虚拟表
-        if self._use_fts5:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT sqlite_compileoption_used('ENABLE_FTS5')")
+            has_fts5 = cursor.fetchone()[0]
+            self._use_fts5 = bool(has_fts5)
+
             cursor.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS fts_index USING fts5(
-                    content,
-                    content='documents',
-                    content_rowid='rowid',
-                    tokenize='porter'
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    metadata TEXT DEFAULT '{}',
+                    scope TEXT DEFAULT 'global',
+                    agent_id TEXT,
+                    project_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-        else:
+
+            if self._use_fts5:
+                cursor.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS fts_index USING fts5(
+                        content,
+                        content='documents',
+                        content_rowid='rowid',
+                        tokenize='porter'
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS fts_index USING fts4(
+                        content,
+                        content='documents',
+                        content_rowid='rowid',
+                        tokenize='porter'
+                    )
+                """)
+
             cursor.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS fts_index USING fts4(
-                    content,
-                    content='documents',
-                    content_rowid='rowid',
-                    tokenize='porter'
-                )
+                CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                    INSERT INTO fts_index(rowid, content) VALUES (new.rowid, new.content);
+                END
             """)
-        
-        # 创建触发器保持同步
-        cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                INSERT INTO fts_index(rowid, content) VALUES (new.rowid, new.content);
-            END
-        """)
-        
-        cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
-                INSERT INTO fts_index(fts_index, rowid, content) VALUES ('delete', old.rowid, old.content);
-            END
-        """)
-        
-        cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                INSERT INTO fts_index(fts_index, rowid, content) VALUES ('delete', old.rowid, old.content);
-                INSERT INTO fts_index(rowid, content) VALUES (new.rowid, new.content);
-            END
-        """)
-        
-        # 创建索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON documents(scope)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent ON documents(agent_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_project ON documents(project_id)")
-        
-        conn.commit()
-        conn.close()
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+                    INSERT INTO fts_index(fts_index, rowid, content) VALUES ('delete', old.rowid, old.content);
+                END
+            """)
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                    INSERT INTO fts_index(fts_index, rowid, content) VALUES ('delete', old.rowid, old.content);
+                    INSERT INTO fts_index(rowid, content) VALUES (new.rowid, new.content);
+                END
+            """)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON documents(scope)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent ON documents(agent_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_project ON documents(project_id)")
+            conn.commit()
     
     def _tokenize_chinese(self, text: str) -> str:
         """
@@ -170,7 +157,7 @@ class BM25Index:
             tokenized_content = self._tokenize_chinese(content)
             metadata_json = json.dumps(metadata or {})
 
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO documents
@@ -221,7 +208,7 @@ class BM25Index:
             if not safe_query:
                 return []
 
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
 
                 # 构建WHERE子句
@@ -311,7 +298,7 @@ class BM25Index:
             是否成功
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
                 conn.commit()
@@ -337,7 +324,7 @@ class BM25Index:
             是否成功
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
 
                 # 获取现有文档
@@ -370,7 +357,7 @@ class BM25Index:
     def get_stats(self) -> Dict[str, Any]:
         """获取索引统计信息"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
 
                 cursor.execute("SELECT COUNT(*) FROM documents")
@@ -393,7 +380,7 @@ class BM25Index:
     def optimize(self):
         """优化索引（清理碎片）"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 cursor = conn.cursor()
                 if self._use_fts5:
                     cursor.execute("INSERT INTO fts_index(fts_index) VALUES ('optimize')")

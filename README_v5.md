@@ -110,9 +110,9 @@ uv run scripts/hkt_memory_v5.py retrieve \
   --debug
 ```
 
-- 默认使用混合召回：L2 合并向量相似度与关键词匹配，再把命中的 `source_l2` 关联回 L1/L0
-- 支持配置向量相似度阈值、向量/BM25 混合权重，并输出 debug 命中解释
-- 未配置 embedding 环境变量时会自动退回本地文本检索
+- 默认使用工业级混合检索 pipeline：意图识别 →（可选）查询扩展 → Vector/BM25 并行召回 → RRF 融合 → Cosine 精排 → 去重/保证摘要 → 生命周期排序
+- `retrieval.fusion_method` 默认 `rrf`，当未配置 embedding Key 或向量库不可用时自动降级为 `weighted`（仅 BM25 / 旧权重融合路径）
+- `--debug` 会输出融合方法、扩展查询、命中解释等信息
 
 ### 4. 全量同步（迁移旧数据）
 

@@ -299,7 +299,7 @@ def test_server_capabilities_version():
         server = MemoryMCPServer(tmp)
         caps = server.get_capabilities()
         assert caps["name"] == "HKT-Memory v5"
-        assert caps["version"] == "5.0.0"
+        assert caps["version"] == "5.1.0"
         tool_names = {t["name"] for t in caps["tools"]}
         assert "memory_cleanup" in tool_names
         required = {

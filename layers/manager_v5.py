@@ -30,6 +30,9 @@ from lifecycle.memory_lifecycle import MemoryLifecycleManager
 from vector_store.store import VectorStore
 from filters.noise_filter import NoiseFilter
 from graph.entity_index import EntityIndex
+from retrieval.intent import detect_intent
+from retrieval.expansion import expand_query
+from retrieval.dedup import dedup_results, compiled_truth_guarantee
 
 
 class LayerManagerV5:
@@ -465,69 +468,170 @@ class LayerManagerV5:
             if not entity_memory_ids:
                 return {name: [] for name in (["L0", "L1", "L2", "debug"] if debug else ["L0", "L1", "L2"])}
 
-        results = {}
-        results = {}
+        intent = detect_intent(query)
+        detail = {"entity": "low", "temporal": "high", "event": "high"}.get(intent, "medium")
+        retrieval_query = (query or "").strip()
+        if intent == "entity":
+            lowered = retrieval_query.lower()
+            lowered = re.sub(r"\bwho is\b", "", lowered, flags=re.IGNORECASE).strip()
+            lowered = re.sub(r"\bwhat is\b", "", lowered, flags=re.IGNORECASE).strip()
+            lowered = re.sub(r"\bwho\b", "", lowered, flags=re.IGNORECASE).strip()
+            lowered = re.sub(r"\bwhat\b", "", lowered, flags=re.IGNORECASE).strip()
+            lowered = re.sub(r"\bis\b", "", lowered, flags=re.IGNORECASE).strip()
+            lowered = lowered.replace("谁是", "").replace("谁", "").replace("什么是", "").replace("是什么", "").strip()
+            retrieval_query = lowered or retrieval_query
+
+        results: Dict[str, List[Dict[str, Any]]] = {}
         hybrid_options = self._get_hybrid_options(
             min_similarity=min_similarity,
             vector_weight=vector_weight,
             bm25_weight=bm25_weight,
         )
-        debug_info: Dict[str, Any] = {
-            "query": query,
-            "topic": topic,
-            "layer": layer,
-            "config": hybrid_options,
-        }
-        vector_l2_results = self._vector_retrieve_l2(
-            query=query,
-            topic=topic,
-            limit=limit * 3,
-            min_similarity=hybrid_options["min_similarity"],
-            debug_info=debug_info if debug else None,
-        )
-        vector_l2_ids = {item.get("id") for item in vector_l2_results if item.get("id")}
-        vector_scores = {
-            item.get("id"): float(item.get("_vector_score", 0.0))
-            for item in vector_l2_results
-            if item.get("id")
-        }
+        debug_info: Optional[Dict[str, Any]] = None
+        if debug:
+            debug_info = {
+                "query": query,
+                "topic": topic,
+                "layer": layer,
+                "intent": intent,
+                "detail": detail,
+                "config": hybrid_options,
+            }
+        inner_limit = limit * 3
+        vector_store_available = self._vector_store_can_query()
+
+        queries = [retrieval_query]
+        if intent in ("general", "event") and vector_store_available:
+            queries = self._expand_query_sync(retrieval_query, debug_info)
+        if debug_info is not None:
+            debug_info["queries"] = queries
+
+        keyword_results = self.l2.search(query=queries[0], scope="all") if queries[0] else []
+        if topic:
+            keyword_results = [item for item in keyword_results if item.get("topic") == topic]
+
+        vector_lists: List[List[Dict[str, Any]]] = []
+        query_embedding = None
+        if vector_store_available:
+            for q in queries:
+                vector_lists.append(
+                    self._vector_retrieve_l2(
+                        query=q,
+                        topic=topic,
+                        limit=inner_limit,
+                        min_similarity=hybrid_options["min_similarity"],
+                        debug_info=None,
+                    )
+                )
+            query_embedding = self._get_query_embedding(queries[0])
+
+        retrieval_config = self.config.get("retrieval", {}) if isinstance(self.config, dict) else {}
+        fusion_method = str(retrieval_config.get("fusion_method", "rrf")).strip().lower()
+        if not vector_store_available:
+            fusion_method = "weighted"
+        if debug_info is not None:
+            debug_info["fusion_method"] = fusion_method
+
+        fused_l2_results: List[Dict[str, Any]] = []
+        if fusion_method == "rrf":
+            from retrieval.hybrid_fusion import fuse_rrf, cosine_rescore
+            fused_l2_results = fuse_rrf(
+                vector_results=vector_lists[0] if vector_lists else [],
+                bm25_results=keyword_results,
+                vector_lists=vector_lists[1:] if len(vector_lists) > 1 else None,
+                k=int(retrieval_config.get("rrf_k", 60)),
+            )
+            if query_embedding is not None:
+                self._attach_result_embeddings(fused_l2_results[: max(inner_limit, 50)])
+                fused_l2_results = cosine_rescore(fused_l2_results, query_embedding)
+            for item in fused_l2_results:
+                reasons: List[str] = []
+                reasons.append(f"rrf={float(item.get('_rrf_score_norm', 0.0)):.4f}")
+                if item.get("_cosine_score") is not None:
+                    reasons.append(f"cosine={float(item.get('_cosine_score', 0.0)):.4f}")
+                item["_debug_explain"] = {
+                    "hybrid_score": round(float(item.get("_hybrid_score", 0.0)), 4),
+                    "vector_score": round(float(item.get("_vector_score", 0.0)), 4),
+                    "bm25_score": round(float(item.get("_bm25_score", 0.0)), 4),
+                    "match_score": round(float(item.get("_match_score", 0.0)), 4),
+                    "lifecycle_score": round(float(item.get("_lifecycle_score", 0.0)), 4),
+                    "reasons": reasons,
+                    "matched_terms": (item.get("_debug_match") or {}).get("matched_terms", []),
+                    "coverage": round(float((item.get("_debug_match") or {}).get("coverage", 0.0)), 4),
+                    "exact_match": bool((item.get("_debug_match") or {}).get("exact_match", False)),
+                }
+        else:
+            vector_l2_results = vector_lists[0] if vector_lists else []
+            vector_l2_ids = {item.get("id") for item in vector_l2_results if item.get("id")}
+            vector_scores = {
+                item.get("id"): float(item.get("_vector_score", 0.0))
+                for item in vector_l2_results
+                if item.get("id")
+            }
+            merged = self._merge_results(keyword_results, vector_l2_results, key_field="id")
+            self._apply_hybrid_scores(merged, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
+            if debug_info is not None:
+                debug_info["vector_ids"] = len(vector_l2_ids)
+            fused_l2_results = merged
+
+        fused_l2_results = [item for item in fused_l2_results if self.lifecycle.is_visible(item.get("id"))]
+        fused_l2_results = self._sort_by_lifecycle(fused_l2_results, inner_limit)
+        fused_scores = {item.get("id"): float(item.get("_hybrid_score", 0.0)) for item in fused_l2_results if item.get("id")}
+        fused_ids = {mem_id for mem_id in fused_scores.keys() if mem_id}
 
         if layer in ("L0", "all"):
-            l0_results = self.l0.retrieve(query=query, topic=topic, limit=limit * 3)
-            if vector_l2_ids:
-                l0_related = self._retrieve_l0_by_sources(topic=topic, source_ids=vector_l2_ids, vector_scores=vector_scores)
+            l0_results = self.l0.retrieve(query=queries[0], topic=topic, limit=inner_limit)
+            if fused_ids:
+                l0_related = self._retrieve_l0_by_sources(topic=topic, source_ids=fused_ids, vector_scores=fused_scores)
                 l0_results = self._merge_results(l0_results, l0_related, key_field="source_l2")
-            self._apply_hybrid_scores(l0_results, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
+            self._apply_source_scores(l0_results, fused_scores, hybrid_options)
             if debug:
                 debug_info.setdefault("layers", {})["L0"] = self._build_layer_debug(l0_results)
             results['L0'] = self._sort_by_lifecycle(
                 [item for item in l0_results if self.lifecycle.is_visible(item.get("source_l2"))],
-                limit,
+                inner_limit,
             )
 
         if layer in ("L1", "all"):
-            l1_results = self._retrieve_l1(query=query, topic=topic, limit=limit * 3)
-            if vector_l2_ids:
-                l1_related = self._retrieve_l1_by_sources(topic=topic, source_ids=vector_l2_ids, vector_scores=vector_scores)
+            l1_results = self._retrieve_l1(query=queries[0], topic=topic, limit=inner_limit)
+            if fused_ids:
+                l1_related = self._retrieve_l1_by_sources(topic=topic, source_ids=fused_ids, vector_scores=fused_scores)
                 l1_results = self._merge_results(l1_results, l1_related, key_field="source_l2")
-            self._apply_hybrid_scores(l1_results, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
+            self._apply_source_scores(l1_results, fused_scores, hybrid_options)
             if debug:
                 debug_info.setdefault("layers", {})["L1"] = self._build_layer_debug(l1_results)
             results['L1'] = self._sort_by_lifecycle(
                 [item for item in l1_results if self.lifecycle.is_visible(item.get("source_l2"))],
-                limit,
+                inner_limit,
             )
 
         if layer in ("L2", "all"):
-            l2_results = self.l2.search(query=query, scope="all")
-            if topic:
-                l2_results = [item for item in l2_results if item.get("topic") == topic]
-            l2_results = self._merge_results(l2_results, vector_l2_results, key_field="id")
-            self._apply_hybrid_scores(l2_results, hybrid_options["vector_weight"], hybrid_options["bm25_weight"])
-            if debug:
-                debug_info.setdefault("layers", {})["L2"] = self._build_layer_debug(l2_results)
-            l2_results = [item for item in l2_results if self.lifecycle.is_visible(item.get("id"))]
-            results['L2'] = self._sort_by_lifecycle(l2_results, limit)
+            if debug_info is not None:
+                debug_info.setdefault("layers", {})["L2"] = self._build_layer_debug(fused_l2_results)
+            results['L2'] = fused_l2_results
+
+        if "L2" in results:
+            results["L2"] = dedup_results(results["L2"])
+
+        if layer == "all":
+            baseline: List[Dict[str, Any]] = []
+            for name in ("L0", "L1", "L2"):
+                for item in results.get(name, []):
+                    tagged = dict(item)
+                    tagged["layer"] = name
+                    baseline.append(tagged)
+            enriched = compiled_truth_guarantee(baseline, self)
+            appended = enriched[len(baseline) :]
+            if appended and "L1" in results:
+                for item in appended:
+                    if str(item.get("layer") or "").upper() == "L1":
+                        results["L1"].append(item)
+
+        resolved_limits = {"L0": limit, "L1": limit, "L2": limit}
+        if layer == "all" and detail == "low":
+            resolved_limits["L2"] = max(1, limit // 4)
+        for layer_name in list(results.keys()):
+            results[layer_name] = results[layer_name][: resolved_limits.get(layer_name, limit)]
 
         # 应用实体过滤和过期标注
         from datetime import date
@@ -558,6 +662,8 @@ class LayerManagerV5:
                     touched_ids.append(source_id)
         self.lifecycle.touch(list(dict.fromkeys(touched_ids)))
         if debug:
+            if debug_info is None:
+                debug_info = {}
             debug_info["final_counts"] = {
                 layer_name: len(items)
                 for layer_name, items in results.items()
@@ -1049,6 +1155,124 @@ class LayerManagerV5:
         if not callable(getattr(self.vector_store, "search", None)):
             return "vector search interface unavailable"
         return ""
+
+    def _expand_query_sync(self, query: str, debug_info: Optional[Dict[str, Any]] = None) -> List[str]:
+        normalized = (query or "").strip()
+        if not normalized:
+            return [""]
+        try:
+            import asyncio
+
+            try:
+                asyncio.get_running_loop()
+                if debug_info is not None:
+                    debug_info["query_expansion"] = {"enabled": False, "reason": "event_loop_running"}
+                return [normalized]
+            except RuntimeError:
+                pass
+
+            expanded = asyncio.run(expand_query(normalized))
+            expanded = [item for item in expanded if str(item).strip()]
+            if not expanded:
+                expanded = [normalized]
+            if expanded[0] != normalized:
+                expanded.insert(0, normalized)
+            if debug_info is not None:
+                debug_info["query_expansion"] = {"enabled": True, "variants": expanded}
+            return expanded
+        except Exception as e:
+            if debug_info is not None:
+                debug_info["query_expansion"] = {"enabled": False, "reason": str(e)}
+            return [normalized]
+
+    def _get_query_embedding(self, query: str) -> Optional[List[float]]:
+        if not self._vector_store_can_query():
+            return None
+        normalized = (query or "").strip()
+        if not normalized:
+            return None
+        embedding_client = getattr(self.vector_store, "embedding_client", None)
+        if embedding_client is None or not callable(getattr(embedding_client, "get_embedding", None)):
+            return None
+        try:
+            embedding = embedding_client.get_embedding(normalized)
+            return list(embedding)
+        except Exception:
+            return None
+
+    def _attach_result_embeddings(self, results: List[Dict[str, Any]]) -> None:
+        if not results:
+            return
+        db_path = getattr(self.vector_store, "db_path", None) if self.vector_store is not None else None
+        if db_path is None:
+            return
+        ids = [item.get("id") for item in results if item.get("id")]
+        if not ids:
+            return
+        try:
+            import sqlite3
+            import json
+            from contextlib import closing
+
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, embedding FROM vectors WHERE id IN ({})".format(",".join(["?"] * len(ids))),
+                    ids,
+                )
+                rows = cursor.fetchall()
+            embeddings = {
+                doc_id: json.loads(blob.decode("utf-8")) if isinstance(blob, (bytes, bytearray)) else json.loads(blob)
+                for doc_id, blob in rows
+                if doc_id and blob
+            }
+            for item in results:
+                doc_id = item.get("id")
+                emb = embeddings.get(doc_id)
+                if emb is not None:
+                    item["_embedding"] = emb
+        except Exception:
+            return
+
+    def _apply_source_scores(
+        self,
+        items: List[Dict[str, Any]],
+        source_scores: Dict[str, float],
+        hybrid_options: Dict[str, float],
+    ) -> None:
+        for item in items:
+            source_id = item.get("source_l2") or item.get("id")
+            base_score = float(source_scores.get(source_id, 0.0)) if source_id else 0.0
+            bm25_score = float(item.get("_bm25_score", 0.0))
+            hybrid_score = base_score or bm25_score
+            if base_score > 0 and bm25_score > 0:
+                hybrid_score = 0.8 * base_score + 0.2 * bm25_score
+            item["_hybrid_score"] = hybrid_score
+            if base_score > 0:
+                item["_vector_score"] = max(float(item.get("_vector_score", 0.0)), base_score)
+            lifecycle_bonus = self.lifecycle.rank_bonus(
+                source_id,
+                scope=item.get("scope") or (f"topic:{item.get('topic')}" if item.get("topic") else None),
+            )
+            item["_lifecycle_score"] = lifecycle_bonus
+            reasons: List[str] = []
+            if base_score > 0:
+                reasons.append(f"source={base_score:.4f}")
+            if bm25_score > 0:
+                reasons.append(f"bm25={bm25_score:.4f}")
+            reasons.append(f"lifecycle={lifecycle_bonus:.4f}")
+            match_debug = item.get("_debug_match") or {}
+            item["_debug_explain"] = {
+                "hybrid_score": round(hybrid_score, 4),
+                "vector_score": round(float(item.get("_vector_score", 0.0)), 4),
+                "bm25_score": round(bm25_score, 4),
+                "match_score": round(float(item.get("_match_score", 0.0)), 4),
+                "lifecycle_score": round(lifecycle_bonus, 4),
+                "reasons": reasons,
+                "matched_terms": match_debug.get("matched_terms", []),
+                "coverage": round(float(match_debug.get("coverage", 0.0)), 4),
+                "exact_match": bool(match_debug.get("exact_match", False)),
+            }
 
     def _with_provenance_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(metadata or {})

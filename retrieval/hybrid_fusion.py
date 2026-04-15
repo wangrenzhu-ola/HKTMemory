@@ -4,14 +4,139 @@ Hybrid Retrieval Fusion
 混合检索融合器 - 结合向量搜索和BM25搜索结果
 """
 
-import numpy as np
+import math
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+
+
+def fuse_rrf(
+    vector_results: List[Dict[str, Any]],
+    bm25_results: List[Dict[str, Any]],
+    vector_lists: Optional[List[List[Dict[str, Any]]]] = None,
+    k: int = 60,
+) -> List[Dict[str, Any]]:
+    lists: List[List[Dict[str, Any]]] = []
+    if vector_results:
+        lists.append(vector_results)
+    if bm25_results:
+        lists.append(bm25_results)
+    if vector_lists:
+        lists.extend([lst for lst in vector_lists if lst])
+
+    ranks_per_list: List[Dict[str, int]] = [
+        {item.get("id"): idx + 1 for idx, item in enumerate(lst) if item.get("id")}
+        for lst in lists
+    ]
+    all_ids = set()
+    for ranks in ranks_per_list:
+        all_ids |= set(ranks.keys())
+
+    if not all_ids:
+        return []
+
+    rrf_scores: Dict[str, float] = {doc_id: 0.0 for doc_id in all_ids}
+    for ranks in ranks_per_list:
+        for doc_id, rank in ranks.items():
+            rrf_scores[doc_id] += 1.0 / (float(k) + float(rank))
+
+    max_score = max(rrf_scores.values()) if rrf_scores else 0.0
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    def merge_into(doc_id: str, payload: Dict[str, Any]) -> None:
+        existing = merged.get(doc_id)
+        if existing is None:
+            merged[doc_id] = dict(payload)
+            return
+        for field, value in payload.items():
+            if existing.get(field) in (None, "", [], {}):
+                existing[field] = value
+        if payload.get("_vector_score") is not None:
+            existing["_vector_score"] = max(float(existing.get("_vector_score", 0.0)), float(payload.get("_vector_score", 0.0)))
+        if payload.get("_bm25_score") is not None:
+            existing["_bm25_score"] = max(float(existing.get("_bm25_score", 0.0)), float(payload.get("_bm25_score", 0.0)))
+        if payload.get("_match_score") is not None:
+            existing["_match_score"] = max(float(existing.get("_match_score", 0.0)), float(payload.get("_match_score", 0.0)))
+
+    for item in bm25_results or []:
+        doc_id = item.get("id")
+        if doc_id:
+            merge_into(doc_id, item)
+    for item in vector_results or []:
+        doc_id = item.get("id")
+        if doc_id:
+            merge_into(doc_id, item)
+    for lst in vector_lists or []:
+        for item in lst or []:
+            doc_id = item.get("id")
+            if doc_id:
+                merge_into(doc_id, item)
+
+    fused: List[Dict[str, Any]] = []
+    for doc_id in all_ids:
+        base = dict(merged.get(doc_id) or {"id": doc_id})
+        raw = float(rrf_scores.get(doc_id, 0.0))
+        norm = (raw / max_score) if max_score > 0 else 0.0
+        vector_score = float(base.get("_vector_score", 0.0))
+        bm25_score = float(base.get("_bm25_score", 0.0))
+        base["_rrf_score"] = raw
+        base["_rrf_score_norm"] = norm
+        base["_hybrid_score"] = norm
+        base["score"] = norm
+        base["vector_score"] = round(vector_score, 4)
+        base["bm25_score"] = round(bm25_score, 4)
+        fused.append(base)
+
+    fused.sort(key=lambda x: float(x.get("_rrf_score", 0.0)), reverse=True)
+    return fused
+
+
+def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+    if not vec1 or not vec2:
+        return 0.0
+    n = min(len(vec1), len(vec2))
+    dot = 0.0
+    norm1 = 0.0
+    norm2 = 0.0
+    for i in range(n):
+        a = float(vec1[i])
+        b = float(vec2[i])
+        dot += a * b
+        norm1 += a * a
+        norm2 += b * b
+    if norm1 <= 0.0 or norm2 <= 0.0:
+        return 0.0
+    return dot / (math.sqrt(norm1) * math.sqrt(norm2))
+
+
+def cosine_rescore(fused_results: List[Dict[str, Any]], query_embedding: List[float]) -> List[Dict[str, Any]]:
+    if not fused_results or query_embedding is None:
+        return fused_results
+    query_vec = list(query_embedding)
+
+    rescored: List[Dict[str, Any]] = []
+    for item in fused_results:
+        emb = item.get("_embedding")
+        if emb is None:
+            rescored.append(item)
+            continue
+        cosine = _cosine_similarity(query_vec, list(emb))
+        cosine_norm = max(0.0, min(1.0, (cosine + 1.0) / 2.0))
+        rrf_norm = float(item.get("_rrf_score_norm", item.get("_hybrid_score", 0.0)))
+        final_score = 0.7 * rrf_norm + 0.3 * cosine_norm
+        updated = dict(item)
+        updated["_cosine_score"] = cosine_norm
+        updated["_hybrid_score"] = final_score
+        updated["score"] = final_score
+        rescored.append(updated)
+
+    rescored.sort(key=lambda x: float(x.get("_hybrid_score", 0.0)), reverse=True)
+    return rescored
 
 
 @dataclass
 class FusionConfig:
     """融合配置"""
+    fusion_method: str = "rrf"
     vector_weight: float = 0.7
     bm25_weight: float = 0.3
     min_score: float = 0.35
@@ -50,7 +175,12 @@ class HybridFusion:
         Returns:
             融合后的结果列表，按综合分数排序
         """
-        # 归一化分数
+        method = str(getattr(self.config, "fusion_method", "rrf") or "rrf").strip().lower()
+        if method == "rrf":
+            fused = fuse_rrf(vector_results=vector_results, bm25_results=bm25_results, vector_lists=None, k=60)
+            filtered = [item for item in fused if float(item.get("score", 0.0)) >= float(self.config.min_score)]
+            return filtered[: self.config.candidate_pool_size]
+
         if self.config.normalize_scores:
             vector_results = self._normalize_scores(vector_results)
             bm25_results = self._normalize_scores(bm25_results)
