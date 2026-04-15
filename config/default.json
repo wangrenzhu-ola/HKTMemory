@@ -30,7 +30,8 @@
     "vector_db": {
       "type": "sqlite",
       "path": "memory.db"
-    }
+    },
+    "vector_backend": "file"
   },
   "extraction": {
     "enabled": true,

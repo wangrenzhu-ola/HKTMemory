@@ -26,6 +26,7 @@ from governance.learnings import LearningTracker
 from lifecycle.memory_lifecycle import MemoryLifecycleManager
 from vector_store.store import VectorStore
 from filters.noise_filter import NoiseFilter
+from graph.entity_index import EntityIndex
 
 
 class LayerManagerV5:
@@ -59,8 +60,14 @@ class LayerManagerV5:
         self._vector_store_error: Optional[str] = None
         self._vector_store_add_failures = 0
         self._vector_store_last_add_failure: Optional[Dict[str, Any]] = None
+        vector_backend = self.config.get("storage", {}).get("vector_backend", "file")
         try:
-            self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
+            if vector_backend == "sqlite":
+                from vector_store.sqlite_backend import SQLiteVectorBackend
+                self.vector_store = SQLiteVectorBackend(str(self.base_path / "vector_store.db"))
+                print(f"✅ Using SQLiteVectorBackend")
+            else:
+                self.vector_store = VectorStore(str(self.base_path / "vector_store.db"))
         except Exception as e:
             self._vector_store_error = str(e)
             print(f"⚠️ Vector store unavailable: {e}")
@@ -68,6 +75,7 @@ class LayerManagerV5:
         self.learnings = LearningTracker(self.base_path / "governance")
         self.errors = ErrorTracker(self.base_path / "governance")
         self.noise_filter = NoiseFilter()
+        self.entity_index = EntityIndex(self.base_path / "entity_index.db")
         
         # 触发器（延迟加载，避免循环导入）
         self._trigger = None
@@ -195,6 +203,7 @@ class LayerManagerV5:
                     enable_l0=True
                 )
                 result = {**l2_result, **all_results}
+                self._process_extraction_metadata(l2_result['L2'], all_results)
                 if l2_result.get("pruned"):
                     result["aggregate_rebuild"] = self.rebuild_aggregates()
                 return result
@@ -361,19 +370,28 @@ class LayerManagerV5:
                  min_similarity: Optional[float] = None,
                  vector_weight: Optional[float] = None,
                  bm25_weight: Optional[float] = None,
-                 debug: bool = False) -> Dict[str, List[Dict]]:
+                 debug: bool = False,
+                 entity: Optional[str] = None) -> Dict[str, List[Dict]]:
         """
         分层检索
-        
+
         Args:
             query: 查询关键词
             layer: 目标层 (L0/L1/L2/all)
             topic: 主题过滤
             limit: 数量限制
-            
+            entity: 按实体名过滤检索
+
         Returns:
             按层分组的结果
         """
+        entity_memory_ids: Optional[set] = None
+        if entity:
+            entity_memory_ids = set(self.entity_index.search_memory_ids_by_entity(entity))
+            if not entity_memory_ids:
+                return {name: [] for name in (["L0", "L1", "L2", "debug"] if debug else ["L0", "L1", "L2"])}
+
+        results = {}
         results = {}
         hybrid_options = self._get_hybrid_options(
             min_similarity=min_similarity,
@@ -436,6 +454,27 @@ class LayerManagerV5:
                 debug_info.setdefault("layers", {})["L2"] = self._build_layer_debug(l2_results)
             l2_results = [item for item in l2_results if self.lifecycle.is_visible(item.get("id"))]
             results['L2'] = self._sort_by_lifecycle(l2_results, limit)
+
+        # 应用实体过滤和过期标注
+        from datetime import date
+        today = date.today().isoformat()
+        for layer_name, items in results.items():
+            if layer_name == "debug":
+                continue
+            filtered_items = []
+            for item in items:
+                source_id = item.get("source_l2") or item.get("id")
+                # entity 过滤
+                if entity_memory_ids is not None and source_id not in entity_memory_ids:
+                    continue
+                # valid_until 过期标注
+                entry = self.lifecycle._manifest.get(source_id) if source_id else None
+                valid_until = entry.get("metadata", {}).get("valid_until") if entry else None
+                if valid_until and valid_until < today:
+                    item["_expired"] = True
+                    item["_expired_badge"] = "⚠️ 已过期"
+                filtered_items.append(item)
+            results[layer_name] = filtered_items[:limit]
 
         touched_ids: List[str] = []
         for items in results.values():
@@ -586,10 +625,11 @@ class LayerManagerV5:
     
     def progressive_retrieve(self,
                             query: str,
-                            limit_per_layer: int = 5) -> Dict[str, List[Dict]]:
+                            limit_per_layer: int = 5,
+                            **kwargs) -> Dict[str, List[Dict]]:
         """渐进式检索 - 先 L0，再 L1，最后 L2"""
-        return self.retrieve(query=query, layer="all", limit=limit_per_layer)
-    
+        return self.retrieve(query=query, layer="all", limit=limit_per_layer, **kwargs)
+
     def get_stats(self) -> Dict[str, Dict[str, Any]]:
         """获取各层统计"""
         # L0 统计
@@ -711,6 +751,25 @@ class LayerManagerV5:
             payload["lifecycle_persisted"] = False
             payload["lifecycle_error"] = "lifecycle state persistence failed"
         return payload
+
+    def _process_extraction_metadata(self, l2_id: str, trigger_results: Dict[str, Any]) -> None:
+        """处理 L1 提取后的元数据（triples、valid_until）"""
+        triples = trigger_results.get("_triples")
+        if triples:
+            self.entity_index.add_triples(l2_id, triples)
+
+        valid_until = trigger_results.get("_valid_until")
+        if valid_until:
+            entry = self.l2.get_entry(l2_id)
+            if entry:
+                self.lifecycle.register_memory(
+                    memory_id=l2_id,
+                    title=entry.get("title", ""),
+                    topic=entry.get("topic", "general"),
+                    layer_type=entry.get("type", "daily"),
+                    source_path=entry.get("source_path", ""),
+                    metadata={**entry.get("metadata", {}), "valid_until": valid_until},
+                )
 
     def _attach_lifecycle_status(
         self,

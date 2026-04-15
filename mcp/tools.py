@@ -30,7 +30,7 @@ class MemoryTools:
         self.learnings = LearningTracker(self.memory_dir / "governance")
         self.errors = ErrorTracker(self.memory_dir / "governance")
     
-    def memory_recall(self, query: str, layer: str = "all", limit: int = 5) -> Dict[str, Any]:
+    def memory_recall(self, query: str, layer: str = "all", limit: int = 5, entity: str = None) -> Dict[str, Any]:
         """
         召回相关记忆
         
@@ -40,11 +40,16 @@ class MemoryTools:
             limit: 返回数量限制
         """
         try:
+            kwargs = {}
+            if entity:
+                kwargs["entity"] = entity
             if layer == "all":
-                results = self.layers.progressive_retrieve(query, limit_per_layer=limit)
+                results = self.layers.progressive_retrieve(query, limit_per_layer=limit, **kwargs)
                 # 扁平化结果
                 flat_results = []
                 for layer_name, items in results.items():
+                    if layer_name == "debug":
+                        continue
                     for item in items:
                         item['layer'] = layer_name
                         flat_results.append(item)
@@ -54,7 +59,7 @@ class MemoryTools:
                     "results": flat_results[:limit]
                 }
             else:
-                results = self.layers.retrieve(query, layer, limit)
+                results = self.layers.retrieve(query, layer, limit=limit, **kwargs)
                 return {
                     "success": True,
                     "count": len(results),
