@@ -2,6 +2,7 @@
 # /// script
 # requires-python = ">=3.9"
 # dependencies = [
+#     "flask>=3.0.0",
 #     "openai>=1.0.0",
 #     "requests>=2.31.0",
 #     "tqdm>=4.66.0",
@@ -119,11 +120,19 @@ class HKTMv5:
     
     def sync(self, full: bool = False, rebuild_index: bool = False):
         """同步各层"""
-        result = self.layers.sync_layers(full_sync=full)
+        if full:
+            result = self.layers.sync_layers(full_sync=True)
+        else:
+            result = {
+                "success": True,
+                "message": "未执行全量同步",
+                "incremental_sync": {"success": False, "message": "增量同步暂未实现"},
+            }
         if rebuild_index and hasattr(self.layers.vector_store, "rebuild_from_files"):
             entries = self.layers.l2.iter_entries()
             index_result = self.layers.vector_store.rebuild_from_files(entries)
             result["rebuild_index"] = index_result
+            result["success"] = bool(result.get("success", True) and index_result.get("success", False))
         return result
     
     def stats(self) -> Dict[str, Any]:

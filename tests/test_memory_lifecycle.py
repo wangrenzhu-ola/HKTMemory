@@ -455,6 +455,31 @@ def test_hkt_memory_v5_stats_entrypoint_runs(tmp_path):
     assert "vector_store" in result.stdout
 
 
+def test_auto_capture_persists_filter_count_across_processes(tmp_path):
+    repo_root = Path(__file__).parent.parent
+    memory_dir = tmp_path / "memory"
+    env = os.environ.copy()
+    env["HKT_MEMORY_DIR"] = str(memory_dir)
+    env["HKT_SESSION_ID"] = "acceptance1"
+    env["HKT_TOPIC"] = "hooks"
+    env["HKT_CONTENT"] = "你好"
+
+    hook_result = subprocess.run(
+        [sys.executable, str(repo_root / "hooks" / "auto_capture.py")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert hook_result.returncode == 0
+    assert "filtered" in hook_result.stderr
+
+    memory = HKTMv5(memory_dir=str(memory_dir), llm_provider="zhipu")
+    lifecycle_stats = memory.stats()["lifecycle"]
+    assert lifecycle_stats["filter_count"] >= 1
+
+
 def test_hkt_memory_v5_retrieve_entrypoint_survives_read_only_lifecycle(tmp_path):
     repo_root = Path(__file__).parent.parent
     memory_dir = tmp_path / "memory"

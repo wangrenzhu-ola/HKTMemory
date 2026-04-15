@@ -139,6 +139,8 @@ class SQLiteVectorBackend:
                     doc_id = self._id_map[idx]
                     matched_ids.append(doc_id)
                     matched_scores[doc_id] = float(score)
+                if not matched_ids:
+                    return []
             else:
                 # fallback to brute-force
                 return self._brute_force_search(query_vec, top_k, layer)
@@ -262,6 +264,14 @@ class SQLiteVectorBackend:
 
     def rebuild_from_files(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Rebuild index from filesystem entries (used by sync --rebuild-index)."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM vectors")
+            conn.commit()
+
+        if self._faiss_available:
+            self._rebuild_index_from_db()
+
         added = 0
         for entry in entries:
             doc_id = entry.get("id")

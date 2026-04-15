@@ -23,9 +23,13 @@ class MemoryLifecycleManager:
         self._manifest = self._load_json(self.manifest_path, {})
         self._state = self._load_json(
             self.state_path,
-            {"last_cleanup_at": None, "last_rebuild_at": None, "scope_feedback": {}},
+            {"last_cleanup_at": None, "last_rebuild_at": None, "scope_feedback": {}, "filter_count": 0},
         )
-        self._filter_count = 0
+        try:
+            self._filter_count = int(self._state.get("filter_count", 0))
+        except (TypeError, ValueError):
+            self._filter_count = 0
+            self._state["filter_count"] = 0
 
     @property
     def enabled(self) -> bool:
@@ -467,7 +471,7 @@ class MemoryLifecycleManager:
             "enabled": self.enabled,
             "statuses": status_counts,
             "total_memories": len(self._manifest),
-            "filter_count": self._filter_count,
+            "filter_count": int(self._state.get("filter_count", self._filter_count)),
             "scopes": self.list_scope_counts(),
             "event_ttl": {
                 "enabled": int(self.config.get("effectivenessEventsDays", 90)) > 0,
@@ -489,7 +493,12 @@ class MemoryLifecycleManager:
         }
 
     def increment_filter_count(self) -> None:
+        previous_state = deepcopy(self._state)
         self._filter_count += 1
+        self._state["filter_count"] = self._filter_count
+        if not self._save_state():
+            self._state = previous_state
+            self._filter_count = int(self._state.get("filter_count", 0))
 
     def rank_bonus(self, memory_id: Optional[str], scope: Optional[str] = None) -> float:
         entry = self._manifest.get(memory_id) if memory_id else None

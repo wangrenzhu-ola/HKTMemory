@@ -5,6 +5,7 @@ BM25 Full-Text Search Index
 支持中文分词 (jieba)
 """
 
+import json
 import os
 import sqlite3
 import re
@@ -224,49 +225,49 @@ class BM25Index:
                 cursor = conn.cursor()
 
                 # 构建WHERE子句
-            where_clauses = []
-            params = []
-            
-            if scopes:
-                placeholders = ','.join('?' * len(scopes))
-                where_clauses.append(f"d.scope IN ({placeholders})")
-                params.extend(scopes)
-            
-            if agent_id:
-                where_clauses.append("d.agent_id = ?")
-                params.append(agent_id)
-            
-            if project_id:
-                where_clauses.append("d.project_id = ?")
-                params.append(project_id)
-            
-            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-            
-            # 执行FTS查询
-            if self._use_fts5:
-                # FTS5支持bm25()函数
-                cursor.execute(f"""
-                    SELECT d.id, d.content, d.metadata, d.scope, 
-                           d.agent_id, d.project_id, d.created_at,
-                           bm25(fts_index) as score
-                    FROM fts_index
-                    JOIN documents d ON fts_index.rowid = d.rowid
-                    WHERE fts_index MATCH ? AND {where_sql}
-                    ORDER BY bm25(fts_index) ASC
-                    LIMIT ?
-                """, [safe_query] + params + [top_k])
-            else:
-                # FTS4使用简单排序
-                cursor.execute(f"""
-                    SELECT d.id, d.content, d.metadata, d.scope,
-                           d.agent_id, d.project_id, d.created_at,
-                           1.0 as score
-                    FROM fts_index
-                    JOIN documents d ON fts_index.rowid = d.rowid
-                    WHERE fts_index MATCH ? AND {where_sql}
-                    ORDER BY rank DESC
-                    LIMIT ?
-                """, [safe_query] + params + [top_k])
+                where_clauses = []
+                params = []
+
+                if scopes:
+                    placeholders = ','.join('?' * len(scopes))
+                    where_clauses.append(f"d.scope IN ({placeholders})")
+                    params.extend(scopes)
+
+                if agent_id:
+                    where_clauses.append("d.agent_id = ?")
+                    params.append(agent_id)
+
+                if project_id:
+                    where_clauses.append("d.project_id = ?")
+                    params.append(project_id)
+
+                where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+                # 执行FTS查询
+                if self._use_fts5:
+                    # FTS5支持bm25()函数
+                    cursor.execute(f"""
+                        SELECT d.id, d.content, d.metadata, d.scope,
+                               d.agent_id, d.project_id, d.created_at,
+                               bm25(fts_index) as score
+                        FROM fts_index
+                        JOIN documents d ON fts_index.rowid = d.rowid
+                        WHERE fts_index MATCH ? AND {where_sql}
+                        ORDER BY bm25(fts_index) ASC
+                        LIMIT ?
+                    """, [safe_query] + params + [top_k])
+                else:
+                    # FTS4使用简单排序
+                    cursor.execute(f"""
+                        SELECT d.id, d.content, d.metadata, d.scope,
+                               d.agent_id, d.project_id, d.created_at,
+                               1.0 as score
+                        FROM fts_index
+                        JOIN documents d ON fts_index.rowid = d.rowid
+                        WHERE fts_index MATCH ? AND {where_sql}
+                        ORDER BY rank DESC
+                        LIMIT ?
+                    """, [safe_query] + params + [top_k])
 
                 rows = cursor.fetchall()
 
@@ -376,7 +377,7 @@ class BM25Index:
                 total = cursor.fetchone()[0]
 
                 cursor.execute("SELECT scope, COUNT(*) FROM documents GROUP BY scope")
-                by_scope = {row[0]: row[1] for row in cursor.fetchall()]
+                by_scope = {row[0]: row[1] for row in cursor.fetchall()}
 
                 return {
                     'total_documents': total,

@@ -34,6 +34,20 @@ def test_memory_store_success(tmp_path):
     assert result["memory_ids"].get("L2") is not None
 
 
+def test_memory_store_defaults_to_all_layers(tmp_path):
+    tools = _make_tools(tmp_path)
+    result = tools.memory_store(
+        content="张三是工程师，负责平台架构设计。该事实有效期至 2024-01-01。",
+        title="张三职业信息",
+        topic="people",
+    )
+
+    assert result["success"] is True
+    assert result["memory_ids"].get("L2") is not None
+    assert result["memory_ids"].get("L1") is not None
+    assert result["memory_ids"].get("L0") is not None
+
+
 def test_memory_store_empty_content(tmp_path):
     tools = _make_tools(tmp_path)
     # 空内容不应崩溃，返回 success 或结构化错误
@@ -53,6 +67,61 @@ def test_memory_recall_returns_structure(tmp_path):
     assert result["success"] is True
     assert "results" in result
     assert isinstance(result["results"], list)
+
+
+def test_mcp_server_store_then_recall_returns_new_memory(tmp_path):
+    from mcp.server import MemoryMCPServer
+
+    server = MemoryMCPServer(str(tmp_path / "memory"))
+    store = server.handle_request({
+        "tool": "memory_store",
+        "params": {
+            "content": "张三是工程师。该事实有效期至 2024-01-01。",
+            "title": "张三职业信息",
+            "topic": "people",
+        },
+    })
+    recall = server.handle_request({
+        "tool": "memory_recall",
+        "params": {
+            "query": "张三 工程师",
+            "layer": "all",
+            "limit": 5,
+        },
+    })
+
+    assert store["success"] is True
+    assert recall["success"] is True
+    assert recall["result"]["count"] >= 1
+    assert any("张三" in item.get("content", "") for item in recall["result"]["results"])
+
+
+def test_mcp_server_entity_recall_uses_rule_based_triples(tmp_path):
+    from mcp.server import MemoryMCPServer
+
+    server = MemoryMCPServer(str(tmp_path / "memory"))
+    store = server.handle_request({
+        "tool": "memory_store",
+        "params": {
+            "content": "张三是工程师，负责平台架构设计。该事实有效期至 2024-01-01。",
+            "title": "张三实体测试",
+            "topic": "people",
+        },
+    })
+    recall = server.handle_request({
+        "tool": "memory_recall",
+        "params": {
+            "query": "张三",
+            "entity": "张三",
+            "layer": "all",
+            "limit": 5,
+        },
+    })
+
+    assert store["success"] is True
+    assert recall["success"] is True
+    assert recall["result"]["count"] >= 1
+    assert server.tools.layers.entity_index.get_stats()["total_triples"] >= 1
 
 
 def test_memory_recall_empty_query(tmp_path):
