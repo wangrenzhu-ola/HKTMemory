@@ -143,9 +143,11 @@ class VectorStore:
                 source TEXT,     -- 来源文件
                 layer TEXT,      -- L0/L1/L2
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_accessed TIMESTAMP,
                 access_count INTEGER DEFAULT 0
             )
         """)
+        self._ensure_schema(cursor)
         
         # 创建索引
         cursor.execute("""
@@ -157,6 +159,12 @@ class VectorStore:
         
         conn.commit()
         conn.close()
+
+    def _ensure_schema(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute("PRAGMA table_info(vectors)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "last_accessed" not in columns:
+            cursor.execute("ALTER TABLE vectors ADD COLUMN last_accessed TIMESTAMP")
     
     def add(self, 
             doc_id: str, 
@@ -232,13 +240,13 @@ class VectorStore:
             # 构建查询
             if layer:
                 cursor.execute("""
-                    SELECT id, content, embedding, metadata, source, layer, access_count
+                    SELECT id, content, embedding, metadata, source, layer, access_count, last_accessed
                     FROM vectors
                     WHERE layer = ?
                 """, (layer,))
             else:
                 cursor.execute("""
-                    SELECT id, content, embedding, metadata, source, layer, access_count
+                    SELECT id, content, embedding, metadata, source, layer, access_count, last_accessed
                     FROM vectors
                 """)
             
@@ -251,7 +259,7 @@ class VectorStore:
             # 计算相似度
             results = []
             for row in rows:
-                doc_id, content, embedding_bytes, metadata_json, source, doc_layer, access_count = row
+                doc_id, content, embedding_bytes, metadata_json, source, doc_layer, access_count, last_accessed = row
                 
                 # 解析embedding
                 doc_vec = np.array(json.loads(embedding_bytes.decode('utf-8')))
@@ -266,7 +274,8 @@ class VectorStore:
                     'metadata': json.loads(metadata_json),
                     'source': source,
                     'layer': doc_layer,
-                    'access_count': access_count
+                    'access_count': access_count,
+                    'last_accessed': last_accessed,
                 })
             
             # 按相似度排序
@@ -302,7 +311,8 @@ class VectorStore:
                 for doc_id in doc_ids:
                     cursor.execute("""
                         UPDATE vectors
-                        SET access_count = access_count + 1
+                        SET access_count = access_count + 1,
+                            last_accessed = CURRENT_TIMESTAMP
                         WHERE id = ?
                     """, (doc_id,))
                 conn.commit()

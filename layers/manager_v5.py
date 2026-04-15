@@ -10,6 +10,7 @@ Layer Manager v5.0 - 自动分层存储
 
 import sys
 import re
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
@@ -23,6 +24,8 @@ from .query_matcher import match_query_corpus
 from config.loader import ConfigLoader
 from governance.errors import ErrorTracker
 from governance.learnings import LearningTracker
+from governance.provenance import collect_provenance
+from governance.conflict_detector import ConflictDetector
 from lifecycle.memory_lifecycle import MemoryLifecycleManager
 from vector_store.store import VectorStore
 from filters.noise_filter import NoiseFilter
@@ -120,6 +123,72 @@ class LayerManagerV5:
                 return line[:80]
 
         return "Untitled"
+
+    def ingest_artifact(
+        self,
+        content: str,
+        source_mode: str,
+        artifact_type: str,
+        title: str = "",
+        topic: str = "closeout",
+        artifact_id: Optional[str] = None,
+        source_uri: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        layer: str = "L2",
+        auto_extract: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_source_mode = (source_mode or "").strip().lower()
+        if normalized_source_mode not in {"governed", "compound"}:
+            raise ValueError("source_mode must be governed or compound")
+        normalized_artifact_type = (artifact_type or "").strip().lower()
+        if not normalized_artifact_type:
+            raise ValueError("artifact_type is required")
+
+        metadata = dict(metadata or {})
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        resolved_artifact_id = (artifact_id or metadata.get("artifact_id") or content_hash).strip()
+        dedupe_key = f"{resolved_artifact_id}|{normalized_source_mode}|{normalized_artifact_type}"
+        existing = self._find_existing_artifact(dedupe_key)
+        if existing:
+            return {
+                "success": True,
+                "deduplicated": True,
+                "existing_memory_id": existing,
+                "dedupe_key": dedupe_key,
+            }
+
+        captured_at = metadata.get("captured_at") or datetime.utcnow().isoformat()
+        forced_metadata = {
+            **metadata,
+            "source_mode": normalized_source_mode,
+            "artifact_type": normalized_artifact_type,
+            "source_uri": source_uri,
+            "captured_at": captured_at,
+            "artifact_id": resolved_artifact_id,
+            "artifact_hash": content_hash,
+            "artifact_ingest_key": dedupe_key,
+        }
+        stored = self.store(
+            content=content,
+            title=title or f"{normalized_source_mode}:{normalized_artifact_type}",
+            layer=layer,
+            topic=topic,
+            metadata=forced_metadata,
+            auto_extract=auto_extract,
+        )
+        return {
+            "success": True,
+            "deduplicated": False,
+            "dedupe_key": dedupe_key,
+            "memory_ids": stored,
+        }
+
+    def _find_existing_artifact(self, dedupe_key: str) -> Optional[str]:
+        for memory_id, entry in self.lifecycle._manifest.items():
+            metadata = entry.get("metadata", {})
+            if metadata.get("artifact_ingest_key") == dedupe_key:
+                return memory_id
+        return None
     
     def store(self,
               content: str,
@@ -216,11 +285,12 @@ class LayerManagerV5:
     def _store_l2_only(self, content: str, title: str, topic: str, 
                        metadata: Dict) -> Dict[str, str]:
         """仅存储到 L2 层"""
+        enriched_metadata = self._with_provenance_metadata(metadata)
         content_lines = content.split('\n')
         l2_id = self.l2.store_daily(
             title=title,
             content_lines=content_lines,
-            metadata={**metadata, "topic": topic}
+            metadata={**enriched_metadata, "topic": topic}
         )
         
         # 同时存储到向量数据库
@@ -233,7 +303,7 @@ class LayerManagerV5:
                 "metadata": {
                     "title": title,
                     "topic": topic,
-                    **metadata
+                    **enriched_metadata
                 }
             }
             try:
@@ -260,7 +330,7 @@ class LayerManagerV5:
                 topic=entry.get("topic", topic),
                 layer_type=entry.get("type", "daily"),
                 source_path=entry.get("source_path", ""),
-                metadata={**entry.get("metadata", {}), **metadata},
+                metadata={**entry.get("metadata", {}), **enriched_metadata},
             )
             prune_result = self.lifecycle.prune_scope(entry.get("scope", f"topic:{topic}"))
         else:
@@ -279,11 +349,13 @@ class LayerManagerV5:
                      topic: str = "general",
                      auto_extract: bool = True) -> Dict[str, str]:
         """存储 episode 并触发分层"""
+        episode_metadata = self._with_provenance_metadata({"topic": topic})
         # 存储到 L2 episode
         l2_id = self.l2.store_episode(
             episode_type=episode_type,
             content=content,
-            source=source
+            source=source,
+            metadata=episode_metadata,
         )
         
         if auto_extract:
@@ -306,7 +378,7 @@ class LayerManagerV5:
                 topic=entry.get("topic", topic),
                 layer_type=entry.get("type", "episode"),
                 source_path=entry.get("source_path", ""),
-                metadata=entry.get("metadata", {}),
+                metadata={**entry.get("metadata", {}), **episode_metadata},
             )
             prune_result = self.lifecycle.prune_scope(entry.get("scope", f"topic:{topic}"))
             self._attach_lifecycle_status(result, lifecycle_result, prune_result)
@@ -323,12 +395,14 @@ class LayerManagerV5:
                        importance: str = "medium",
                        auto_extract: bool = True) -> Dict[str, str]:
         """存储永久记忆并触发分层"""
+        evergreen_metadata = self._with_provenance_metadata({"topic": topic})
         # 存储到 L2 evergreen
         l2_id = self.l2.store_evergreen(
             title=title,
             content_lines=content_lines,
             category=category,
-            importance=importance
+            importance=importance,
+            metadata=evergreen_metadata,
         )
         
         content = '\n'.join(content_lines)
@@ -353,7 +427,7 @@ class LayerManagerV5:
                 topic=entry.get("topic", topic),
                 layer_type=entry.get("type", "evergreen"),
                 source_path=entry.get("source_path", ""),
-                metadata={**entry.get("metadata", {}), "importance": importance},
+                metadata={**entry.get("metadata", {}), **evergreen_metadata, "importance": importance},
             )
             prune_result = self.lifecycle.prune_scope(entry.get("scope", f"topic:{topic}"))
             self._attach_lifecycle_status(result, lifecycle_result, prune_result)
@@ -752,6 +826,11 @@ class LayerManagerV5:
             payload["lifecycle_error"] = "lifecycle state persistence failed"
         return payload
 
+    def scan_conflicts(self, output_path: Optional[str] = None) -> Dict[str, Any]:
+        detector = ConflictDetector(self.base_path)
+        report_path = Path(output_path) if output_path else None
+        return detector.write_report(output_path=report_path)
+
     def _process_extraction_metadata(self, l2_id: str, trigger_results: Dict[str, Any]) -> None:
         """处理 L1 提取后的元数据（triples、valid_until）"""
         triples = trigger_results.get("_triples")
@@ -951,6 +1030,17 @@ class LayerManagerV5:
         if not callable(getattr(self.vector_store, "search", None)):
             return "vector search interface unavailable"
         return ""
+
+    def _with_provenance_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        merged = dict(metadata or {})
+        if merged.get("commit_hash") and "pr_id" in merged:
+            return merged
+        provenance = collect_provenance(self.base_path)
+        merged.setdefault("commit_hash", provenance.get("commit_hash"))
+        merged.setdefault("pr_id", provenance.get("pr_id"))
+        if provenance.get("provenance_diagnostic"):
+            merged.setdefault("provenance_diagnostic", provenance.get("provenance_diagnostic"))
+        return merged
 
     def _handle_vector_add_failure(self, l2_id: str, add_payload: Dict[str, Any], reason: str) -> None:
         self._vector_store_add_failures += 1
