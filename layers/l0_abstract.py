@@ -214,21 +214,39 @@ class L0AbstractLayer:
                 continue
             
             header = lines[0].strip()
-            timestamp_line = next((l for l in lines if '**时间**' in l), '')
-            timestamp = timestamp_line.split(':', 1)[1].strip() if ':' in timestamp_line else ''
-            content_line = next((l for l in lines if '**核心**' in l), '')
-            content = content_line.split(':', 1)[1].strip() if ':' in content_line else ''
-            source_line = next((l for l in lines if '**来源**' in l), '')
-            source = source_line.split(':', 1)[1].strip() if ':' in source_line else ''
+            memory_id = header
+            title = header
+            timestamp = ""
+
+            if "[" in header and "]" in header:
+                header_parts = header.split(" ", 1)
+                memory_id = header_parts[0].strip()
+                title = memory_id
+                if len(header_parts) > 1:
+                    timestamp = header_parts[1].strip().strip("[]")
+
+            timestamp_line = next((l for l in lines if "**时间**" in l), "")
+            if not timestamp and ":" in timestamp_line:
+                timestamp = timestamp_line.split(":", 1)[1].strip()
+
+            content_line = next((l for l in lines if l.startswith("- **Content**:")), "")
+            if not content_line:
+                content_line = next((l for l in lines if "**核心**" in l), "")
+            content = content_line.split(":", 1)[1].strip() if ":" in content_line else ""
+
+            source_line = next((l for l in lines if l.startswith("- **Source**:")), "")
+            if not source_line:
+                source_line = next((l for l in lines if "**来源**" in l), "")
+            source = source_line.split(":", 1)[1].strip() if ":" in source_line else ""
             
             results.append({
-                'id': source or header,
+                'id': memory_id or source or header,
                 'timestamp': timestamp,
                 'topic': topic_file.stem,
                 'content': content,
                 'source': source,
                 'source_l2': source,
-                'title': header,
+                'title': title,
             })
         
         return results

@@ -36,6 +36,8 @@ class EmbeddingClient:
             256,
             int(os.environ.get("HKT_MEMORY_EMBEDDING_MAX_INPUT_CHARS", str(self.DEFAULT_MAX_INPUT_CHARS)))
         )
+        self.cache_enabled = os.environ.get("HKT_MEMORY_EMBEDDING_CACHE", "true").lower() != "false"
+        self._cache: Dict[str, List[float]] = {}
         self._init_client()
     
     def _init_client(self):
@@ -69,15 +71,22 @@ class EmbeddingClient:
         if not text or not text.strip():
             # 返回零向量
             return [0.0] * self.DIMENSIONS
+
+        normalized_text = text[:self.max_input_chars]
+        if self.cache_enabled and normalized_text in self._cache:
+            return list(self._cache[normalized_text])
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 response = self.client.embeddings.create(
-                    input=text[:self.max_input_chars],
+                    input=normalized_text,
                     model=self.model
                 )
-                return response.data[0].embedding
+                embedding = response.data[0].embedding
+                if self.cache_enabled:
+                    self._cache[normalized_text] = list(embedding)
+                return embedding
             except Exception as e:
                 if attempt < max_retries - 1:
                     import time

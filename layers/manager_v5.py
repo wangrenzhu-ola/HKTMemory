@@ -146,7 +146,7 @@ class LayerManagerV5:
         effective_title = self._resolve_title(title, content, topic)
 
         # 噪声预过滤
-        if self.noise_filter.is_noise(content):
+        if content.strip() and self.noise_filter.is_noise(content):
             self.lifecycle.increment_filter_count()
             return {"filtered": True, "reason": "content matches noise filter rules"}
 

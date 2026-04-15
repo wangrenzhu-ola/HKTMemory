@@ -69,7 +69,7 @@ class MemoryTools:
             return {"success": False, "error": str(e)}
     
     def memory_store(self, content: str, title: str = "", 
-                     layer: str = "L2", topic: str = "general",
+                     layer: str = "all", topic: str = "general",
                      importance: str = "medium", pinned: bool = False) -> Dict[str, Any]:
         """
         存储新记忆

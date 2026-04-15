@@ -115,7 +115,7 @@ class MemoryMCPServer:
                     "parameters": {
                         "content": {"type": "string", "required": True},
                         "title": {"type": "string", "default": ""},
-                        "layer": {"type": "string", "default": "L2"},
+                        "layer": {"type": "string", "default": "all"},
                         "topic": {"type": "string", "default": "general"},
                         "importance": {"type": "string", "default": "medium"},
                         "pinned": {"type": "boolean", "default": False}

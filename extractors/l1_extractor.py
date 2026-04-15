@@ -14,6 +14,7 @@ L1 摘要提取器
 
 import os
 import json
+import re
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
@@ -287,7 +288,6 @@ class L1Extractor:
         
         # 人员（简单规则）
         people = []
-        import re
         # 匹配 "张三说:" 或 "@李四" 或 "负责人: 王五"
         patterns = [
             r'([\u4e00-\u9fa5]{2,4})(?:说|提到|指出|建议)',
@@ -297,7 +297,13 @@ class L1Extractor:
         for pattern in patterns:
             matches = re.findall(pattern, content)
             people.extend(matches)
-        people = list(set(people))[:5]  # 去重，最多5个
+        triples = self._extract_rule_based_triples(content)
+        for subject, _, obj in triples:
+            if self._looks_like_person_name(subject):
+                people.append(subject)
+            if self._looks_like_person_name(obj):
+                people.append(obj)
+        people = list(dict.fromkeys(people))[:5]
         
         # 主题标签（从内容提取关键词）
         topics = []
@@ -314,6 +320,8 @@ class L1Extractor:
         if not topics:
             topics = ["通用"]
         
+        valid_until = self._extract_rule_based_valid_until(content)
+
         return L1Summary(
             title=title or "Untitled",
             summary=summary,
@@ -323,6 +331,39 @@ class L1Extractor:
             people=people,
             topics=topics[:3],
             importance="medium",
-            triples=[],
-            valid_until=None,
+            triples=triples,
+            valid_until=valid_until,
         )
+
+    def _extract_rule_based_triples(self, content: str) -> List[List[str]]:
+        triples: List[List[str]] = []
+        seen = set()
+
+        patterns = [
+            (r'([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,15})是([\u4e00-\u9fa5A-Za-z][^，。；\n]{0,20})', "is"),
+            (r'([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9_-]{1,15})负责([^，。；\n]{1,30})', "负责"),
+        ]
+
+        for pattern, relation in patterns:
+            for subject, obj in re.findall(pattern, content):
+                triple = [subject.strip(), relation, obj.strip()]
+                key = tuple(triple)
+                if key in seen or not triple[0] or not triple[2]:
+                    continue
+                seen.add(key)
+                triples.append(triple)
+
+        return triples[:5]
+
+    def _extract_rule_based_valid_until(self, content: str) -> Optional[str]:
+        match = re.search(
+            r'(?:有效期至|有效至|截止到|截至|截止日期|到期时间)\s*[:：]?\s*(\d{4}-\d{2}-\d{2})',
+            content,
+        )
+        if match:
+            return match.group(1)
+        return None
+
+    def _looks_like_person_name(self, value: str) -> bool:
+        candidate = (value or "").strip()
+        return bool(re.fullmatch(r'[\u4e00-\u9fa5]{2,4}', candidate))
