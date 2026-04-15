@@ -129,6 +129,8 @@ class LayerTrigger:
             try:
                 l1_summary = self._generate_l1(content, title, topic, l2_id, timestamp)
                 result["L1"] = l1_summary.get("_id", "unknown")
+                result["_triples"] = l1_summary.get("triples", [])
+                result["_valid_until"] = l1_summary.get("valid_until")
                 print(f"   ✅ L1 生成完成: {result['L1']}")
             except Exception as e:
                 print(f"   ❌ L1 生成失败: {e}")
@@ -157,12 +159,12 @@ class LayerTrigger:
         print(f"\n✨ 分层提取完成: L2={result.get('L2', 'N/A')}, L1={result.get('L1', 'N/A')}, L0={result.get('L0', 'N/A')}")
         return result
     
-    def _generate_l1(self, content: str, title: str, topic: str, 
+    def _generate_l1(self, content: str, title: str, topic: str,
                      l2_id: str, timestamp: str) -> Dict:
         """生成 L1 摘要"""
         # 使用提取器
         summary = self.l1_extractor.extract(content, title)
-        
+
         # 构建 L1 数据结构
         l1_data = summary.to_dict()
         l1_data.update({
@@ -172,10 +174,10 @@ class LayerTrigger:
             "_source_l2": l2_id,
             "_layer": "L1"
         })
-        
+
         # 存储到文件
         self._store_l1_file(l1_data, topic)
-        
+
         return l1_data
     
     def _store_l1_file(self, l1_data: Dict, topic: str):
@@ -218,11 +220,22 @@ class LayerTrigger:
         if l1_data.get('people'):
             lines.append(f"**涉及人员**: {', '.join(l1_data['people'])}")
             lines.append("")
-        
+
         if l1_data.get('topics'):
             lines.append(f"**标签**: {', '.join(l1_data['topics'])}")
             lines.append("")
-        
+
+        if l1_data.get('triples'):
+            lines.append("**实体关系**: ")
+            for triple in l1_data['triples']:
+                if len(triple) >= 3:
+                    lines.append(f"- {triple[0]} —[{triple[1]}]→ {triple[2]}")
+            lines.append("")
+
+        if l1_data.get('valid_until'):
+            lines.append(f"**有效期至**: {l1_data['valid_until']}")
+            lines.append("")
+
         lines.append("---")
         lines.append("")
         

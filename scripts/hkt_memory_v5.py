@@ -94,15 +94,16 @@ class HKTMv5:
             auto_extract=auto_extract
         )
     
-    def retrieve(self, 
-                 query: str, 
+    def retrieve(self,
+                 query: str,
                  layer: str = "all",
                  topic: str = None,
                  limit: int = 10,
                  min_similarity: float = None,
                  vector_weight: float = None,
                  bm25_weight: float = None,
-                 debug: bool = False) -> Dict[str, List[Dict]]:
+                 debug: bool = False,
+                 entity: str = None) -> Dict[str, List[Dict]]:
         """检索记忆"""
         return self.layers.retrieve(
             query=query,
@@ -113,11 +114,17 @@ class HKTMv5:
             vector_weight=vector_weight,
             bm25_weight=bm25_weight,
             debug=debug,
+            entity=entity,
         )
     
-    def sync(self, full: bool = False):
+    def sync(self, full: bool = False, rebuild_index: bool = False):
         """同步各层"""
-        return self.layers.sync_layers(full_sync=full)
+        result = self.layers.sync_layers(full_sync=full)
+        if rebuild_index and hasattr(self.layers.vector_store, "rebuild_from_files"):
+            entries = self.layers.l2.iter_entries()
+            index_result = self.layers.vector_store.rebuild_from_files(entries)
+            result["rebuild_index"] = index_result
+        return result
     
     def stats(self) -> Dict[str, Any]:
         """获取统计"""
@@ -217,13 +224,19 @@ def main():
     retrieve_parser.add_argument("--vector-weight", type=float, help="混合召回中的向量权重")
     retrieve_parser.add_argument("--bm25-weight", type=float, help="混合召回中的 BM25 权重")
     retrieve_parser.add_argument("--debug", action="store_true", help="输出命中解释与召回细节")
-    
+    retrieve_parser.add_argument("--entity", help="按实体名过滤检索")
+
     # Sync command
     sync_parser = subparsers.add_parser("sync", help="同步各层")
     sync_parser.add_argument(
         "--full",
         action="store_true",
         help="全量同步（重新生成所有 L1/L0）"
+    )
+    sync_parser.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="从文件系统重建向量索引"
     )
     
     # Stats command
@@ -321,8 +334,10 @@ def main():
             print(f"   Min Similarity: {args.min_similarity}")
         if args.vector_weight is not None or args.bm25_weight is not None:
             print(f"   Weights: vector={args.vector_weight}, bm25={args.bm25_weight}")
+        if args.entity:
+            print(f"   Entity: {args.entity}")
         print()
-        
+
         results = memory.retrieve(
             query=args.query,
             layer=args.layer,
@@ -332,6 +347,7 @@ def main():
             vector_weight=args.vector_weight,
             bm25_weight=args.bm25_weight,
             debug=args.debug,
+            entity=args.entity,
         )
         
         for layer_name, items in results.items():
@@ -397,9 +413,11 @@ def main():
             print("   模式: 全量同步")
         else:
             print("   模式: 增量同步")
+        if args.rebuild_index:
+            print("   操作: 重建向量索引")
         print()
-        
-        result = memory.sync(full=args.full)
+
+        result = memory.sync(full=args.full, rebuild_index=args.rebuild_index)
         if result:
             print("🔁 同步结果\n")
             for key, value in result.items():
@@ -457,6 +475,28 @@ def main():
         print("🪝 反馈结果\n")
         for key, value in result.items():
             print(f"   {key}: {value}")
+
+        # 触发结构化反射分析
+        if args.label == "useful" and args.memory_id:
+            from governance.reflection_analyzer import ReflectionAnalyzer
+            analyzer = ReflectionAnalyzer(memory.memory_dir)
+            manifest = memory.layers.lifecycle.get_memory(args.memory_id)
+            access_count = manifest.get("access_count", 0) if manifest else 0
+            threshold = memory.config.get("governance", {}).get("reflection_threshold", 3)
+            if analyzer.should_trigger(access_count, threshold):
+                l2_entry = memory.layers.l2.get_entry(args.memory_id)
+                memories = [l2_entry] if l2_entry else []
+                skill = analyzer.analyze(memories, feedback_context={
+                    "memory_id": args.memory_id,
+                    "query": args.query,
+                    "note": args.note,
+                    "access_count": access_count,
+                })
+                if skill:
+                    analyzer.write_skill(skill)
+                    print(f"\n✨ 已提取并写入技能: {skill['skill_name']}")
+                else:
+                    print(f"\n⚠️ 反射分析未产出有效 skill")
 
     elif args.command == "rebuild":
         result = memory.rebuild(include_archived=args.include_archived)

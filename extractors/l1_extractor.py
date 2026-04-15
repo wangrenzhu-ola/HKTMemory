@@ -29,7 +29,9 @@ class L1Summary:
     people: List[str]  # 涉及人员
     topics: List[str]  # 主题标签
     importance: str  # high/medium/low
-    
+    triples: List[List[str]]  # 实体关系三元组 [[subject, relation, object], ...]
+    valid_until: Optional[str]  # 时效截止日期 YYYY-MM-DD
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "title": self.title,
@@ -39,7 +41,9 @@ class L1Summary:
             "action_items": self.action_items,
             "people": self.people,
             "topics": self.topics,
-            "importance": self.importance
+            "importance": self.importance,
+            "triples": self.triples,
+            "valid_until": self.valid_until,
         }
 
 
@@ -65,7 +69,11 @@ class L1Extractor:
     ],
     "people": ["人员1", "人员2"],
     "topics": ["主题标签1", "主题标签2"],
-    "importance": "high/medium/low"
+    "importance": "high/medium/low",
+    "triples": [
+        ["主体", "关系", "客体"]
+    ],
+    "valid_until": "YYYY-MM-DD 或 null"
 }}
 
 要求:
@@ -77,6 +85,8 @@ class L1Extractor:
 6. people: 提取涉及的人员名称
 7. topics: 3-5个主题标签，用于分类
 8. importance: 根据内容重要性判断
+9. triples: 提取文档中的实体关系三元组（如 ["张三", "is", "工程师"]），如无不填
+10. valid_until: 如果文档包含时效性声明（如"截止到2025-06-01"），提取为 YYYY-MM-DD 格式；否则填 null
 
 只返回 JSON，不要其他文字。"""
     
@@ -233,7 +243,9 @@ class L1Extractor:
             action_items=data.get("action_items", []),
             people=data.get("people", []),
             topics=data.get("topics", []),
-            importance=data.get("importance", "medium")
+            importance=data.get("importance", "medium"),
+            triples=data.get("triples", []) or [],
+            valid_until=data.get("valid_until") or None,
         )
     
     def _rule_based_extract(self, content: str, title_hint: str) -> L1Summary:
@@ -310,5 +322,7 @@ class L1Extractor:
             action_items=[],
             people=people,
             topics=topics[:3],
-            importance="medium"
+            importance="medium",
+            triples=[],
+            valid_until=None,
         )
