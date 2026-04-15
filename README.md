@@ -1,6 +1,6 @@
 ---
 name: "hkt-memory"
-description: "生产级长期记忆系统 v5.0，支持 L2→L1/L0 自动分层与智能摘要提取"
+description: "生产级长期记忆系统 v5.2.0，支持 L2→L1/L0 自动分层、MCP 协议、自动捕获与噪声过滤"
 triggers:
   - memory
   - recall
@@ -8,9 +8,9 @@ triggers:
   - retrieve
 ---
 
-# HKT-Memory v5.0
+# HKT-Memory v5.2.0
 
-> 自动分层长期记忆系统：L2 写入后自动触发 L1/L0 生成，支持 LLM 智能摘要与分层检索
+> 自动分层长期记忆系统：L2 写入后自动触发 L1/L0 生成，支持 LLM 智能摘要、MCP 协议集成、Claude Code 钩子自动捕获与噪声过滤
 
 ## 核心特性
 
@@ -19,6 +19,10 @@ triggers:
 - **混合检索**：向量相似度 + BM25 融合召回
 - **Weibull 衰减**：基于访问频率/重要性的生命周期管理
 - **多作用域隔离**：global/agent/project/user/session 维度
+- **MCP 协议支持**：9+ 个 MCP 工具，兼容 Claude / Cursor 等客户端
+- **Claude Code 钩子集成**：PreCompact 自动回忆、PostToolUse 自动捕获
+- **噪声预过滤**：自动过滤问候语、确认词、纯 emoji 等低信息内容
+- **REST API 语义端点**：`/store`、`/recall`、`/forget`、`/stats`
 
 ## 快速开始
 
@@ -104,7 +108,35 @@ uv run scripts/hkt_memory_v5.py feedback --label wrong --memory-id "xxx"
 
 # 测试
 uv run scripts/hkt_memory_v5.py test
+
+# 启动 MCP HTTP 服务
+uv run scripts/hkt_memory_v5.py serve --host 127.0.0.1 --port 8765
 ```
+
+## MCP 与 REST API
+
+HKT-Memory v5.2.0 内置 MCP HTTP 服务器，提供语义化 REST 端点：
+
+```bash
+curl -X POST http://localhost:8765/store \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"会议纪要","topic":"meetings"}'
+
+curl -X POST http://localhost:8765/recall \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"API设计","layer":"all","limit":5}'
+
+curl http://localhost:8765/stats
+```
+
+同时支持标准 MCP JSON-RPC 2.0 `stdio` 模式，可直接接入 Claude Code `--mcp-server` 配置。
+
+## Claude Code 自动钩子
+
+项目已包含 `.claude/settings.json` 配置，支持：
+
+- **PreCompact**：会话压缩前自动调用 `auto_recall.py`，注入相关历史记忆
+- **PostToolUse**：工具调用后自动调用 `auto_capture.py`，将新信息写入 `session:<id>` scope
 
 ## 触发条件（Claude Code Skills 集成）
 
@@ -125,6 +157,8 @@ uv run scripts/hkt_memory_v5.py test
 | `L1_EXTRACTOR_PROVIDER` | LLM 提供商 | `zhipu` |
 | `HKT_MEMORY_DIR` | 记忆存储目录 | `memory` |
 | `HKT_MEMORY_LIFECYCLE_ENABLED` | 启用生命周期 | `true` |
+| `HKT_MAX_TOKENS` | auto_recall 输出 token 上限 | `512` |
+| `HKT_QUERY` / `CLAUDE_CONTEXT` | auto_recall 查询词来源 | - |
 
 ## 项目结构
 
@@ -158,6 +192,11 @@ HKTMemory/
 │   └── learnings.py          # 学习跟踪
 ├── vector_store/             # 向量存储
 ├── mcp/                      # MCP 协议服务
+├── filters/                  # 噪声预过滤
+├── hooks/                    # Claude Code 自动钩子
+│   ├── auto_recall.py        # 自动回忆
+│   └── auto_capture.py       # 自动捕获
+├── tests/                    # 测试
 └── config/                   # 配置
 ```
 
@@ -170,4 +209,4 @@ HKTMemory/
 
 ## 版本
 
-**当前版本**: v5.0
+**当前版本**: v5.2.0

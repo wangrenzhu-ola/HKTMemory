@@ -275,7 +275,12 @@ def main():
     
     # Test command
     test_parser = subparsers.add_parser("test", help="测试存储和检索")
-    
+
+    # Serve command
+    serve_parser = subparsers.add_parser("serve", help="启动 MCP HTTP 服务器")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="HTTP 主机地址")
+    serve_parser.add_argument("--port", type=int, default=8765, help="HTTP 端口")
+
     args = parser.parse_args()
     
     if not args.command:
@@ -508,6 +513,12 @@ def main():
         print(f"   L2: {args.memory_dir}/L2-Full/daily/")
         print(f"   L1: {args.memory_dir}/L1-Overview/topics/tools.md")
         print(f"   L0: {args.memory_dir}/L0-Abstract/topics/tools.md")
+
+    elif args.command == "serve":
+        from mcp.server import MemoryMCPServer
+        print(f"🚀 启动 MCP HTTP 服务器 {args.host}:{args.port} ...")
+        server = MemoryMCPServer(args.memory_dir)
+        server.start_http(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
