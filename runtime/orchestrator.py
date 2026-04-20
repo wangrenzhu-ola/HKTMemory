@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from retrieval.adaptive_retriever import AdaptiveRetriever
 from runtime.provider import MemoryProvider
+from runtime.safety import MemorySafetyGate
 
 
 @dataclass
@@ -49,6 +50,7 @@ class RecallOrchestrator:
         self.provider = provider
         self.config = dict(config or {})
         self.adaptive = AdaptiveRetriever()
+        self.safety_gate = MemorySafetyGate(self.config.get("safety", {}))
 
     def orchestrate(self, request: RecallRequest) -> Dict[str, Any]:
         normalized_mode = self._normalize_mode(request.mode)
@@ -96,6 +98,8 @@ class RecallOrchestrator:
         sources: List[Dict[str, Any]] = []
         omitted_sources: List[Dict[str, Any]] = []
         total_chars = 0
+        blocked_items = 0
+        redacted_items = 0
 
         for source_name in self.MODE_SOURCE_ORDER[normalized_mode]:
             if not source_enabled[source_name]:
@@ -115,6 +119,13 @@ class RecallOrchestrator:
             )
             kept: List[Dict[str, Any]] = []
             for item in items:
+                injection_item = self._prepare_item_for_injection(item)
+                if injection_item is None:
+                    blocked_items += 1
+                    continue
+                if injection_item.get("safety", {}).get("redacted"):
+                    redacted_items += 1
+                item = injection_item
                 snippet = self._context_snippet(item)
                 if total_chars + len(snippet) > budget_chars and results:
                     break
@@ -165,6 +176,10 @@ class RecallOrchestrator:
                     "cache_key": prefetched.get("cache_key"),
                 },
                 "token_budget": token_budget,
+                "safety": {
+                    "blocked_items": blocked_items,
+                    "redacted_items": redacted_items,
+                },
             },
         }
 
@@ -244,6 +259,7 @@ class RecallOrchestrator:
                     "scope": item.get("scope"),
                     "timestamp": item.get("latest_timestamp") or item.get("timestamp"),
                     "memory_id": item.get("latest_memory_id"),
+                    "metadata": item.get("metadata", {}),
                 }
                 for item in items[:limit]
             ]
@@ -263,6 +279,7 @@ class RecallOrchestrator:
                     "timestamp": item.get("timestamp"),
                     "memory_id": item.get("id"),
                     "score": item.get("_match_score"),
+                    "metadata": item.get("metadata", {}),
                 }
                 for item in items[:limit]
             ]
@@ -290,6 +307,7 @@ class RecallOrchestrator:
                         "timestamp": item.get("timestamp"),
                         "memory_id": item.get("source_l2") or item.get("id"),
                         "score": item.get("_match_score") or item.get("_hybrid_score"),
+                        "metadata": item.get("metadata", {}),
                     }
                 )
         flat.sort(
@@ -340,3 +358,19 @@ class RecallOrchestrator:
         title = str(item.get("title") or "")
         content = str(item.get("content") or "")
         return f"{title}\n{content}"
+
+    def _prepare_item_for_injection(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        metadata = dict(item.get("metadata", {}) or {})
+        analysis = self.safety_gate.sanitize_for_injection(
+            content=str(item.get("content") or ""),
+            metadata=metadata,
+        )
+        if not analysis.get("allow_injection", True):
+            return None
+        prepared = dict(item)
+        prepared["content"] = analysis.get("content", prepared.get("content", ""))
+        prepared["safety"] = {
+            "redacted": bool(analysis.get("redactions")),
+            "risks": list(analysis.get("risks", [])),
+        }
+        return prepared

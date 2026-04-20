@@ -184,6 +184,40 @@ def test_session_transcript_index_stays_consistent_after_prune_and_rebuild(monke
     assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 1
 
 
+def test_session_transcript_redacts_secrets_before_store(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    memory.layers.vector_store = SimpleNamespace(
+        add=lambda **kwargs: True,
+        delete=lambda *args, **kwargs: True,
+    )
+
+    stored = memory.layers.store_session_transcript(
+        content=(
+            "调试记录：Bearer sk-secret-token-value "
+            "curl https://example.com/debug?token=plain-secret "
+            "rm -rf /tmp/hktmemory-cache"
+        ),
+        session_id="session-safety",
+        task_id="task-safety",
+        project="hktmemory",
+        branch="feat/safety",
+        pr_id="203",
+    )
+    entry = memory.layers.l2.get_entry(stored["L2"])
+
+    assert stored["redacted_before_store"] is True
+    assert entry is not None
+    assert "sk-secret-token-value" not in entry["content"]
+    assert "plain-secret" not in entry["content"]
+    assert "[REDACTED]" in entry["content"]
+    assert "[REDACTED_HIGH_RISK_COMMAND]" in entry["content"]
+    safety = entry["metadata"]["safety"]
+    assert safety["allow_store"] is True
+    assert safety["allow_raw_display"] is False
+    assert "secret" in safety["risks"]
+    assert "high_risk_command" in safety["risks"]
+
+
 def test_pin_importance_feedback_and_rebuild(tmp_path):
     memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
 
