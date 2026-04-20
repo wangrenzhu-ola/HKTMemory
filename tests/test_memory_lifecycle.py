@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -104,6 +105,83 @@ def test_cleanup_and_prune(monkeypatch, tmp_path):
 
     remaining_events = lifecycle.events_path.read_text(encoding="utf-8")
     assert old_event["timestamp"] not in remaining_events
+
+
+def test_session_transcript_index_tracks_forget_restore_and_hard_delete(tmp_path):
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    memory.layers.vector_store = SimpleNamespace(
+        add=lambda **kwargs: True,
+        delete=lambda *args, **kwargs: True,
+    )
+
+    stored = memory.layers.store_session_transcript(
+        content="之前这个问题怎么修过：先补 transcript metadata 再补 MCP 路由",
+        session_id="session-history",
+        task_id="task-history",
+        project="hktmemory",
+        branch="feat/session-search",
+        pr_id="201",
+    )
+    memory_id = stored["L2"]
+
+    assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 1
+    assert memory.layers.session_search(query="transcript metadata", project="hktmemory", limit=5)["results"][0]["id"] == memory_id
+
+    soft_deleted = memory.forget(memory_id=memory_id)
+    assert soft_deleted["success"] is True
+    assert soft_deleted["removed_from_session_transcript_index"] is True
+    assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 0
+    assert memory.layers.session_search(query="transcript metadata", project="hktmemory", limit=5)["count"] == 0
+
+    restored = memory.restore(memory_id=memory_id)
+    assert restored["success"] is True
+    assert restored["restored_to_session_transcript_index"] is True
+    assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 1
+    assert memory.layers.session_search(query="transcript metadata", project="hktmemory", limit=5)["results"][0]["id"] == memory_id
+
+    hard_deleted = memory.forget(memory_id=memory_id, force=True)
+    assert hard_deleted["success"] is True
+    assert hard_deleted["removed_from_session_transcript_index"] is True
+    assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 0
+
+
+def test_session_transcript_index_stays_consistent_after_prune_and_rebuild(monkeypatch, tmp_path):
+    monkeypatch.setenv("HKT_MEMORY_MAX_ENTRIES_PER_SCOPE", "1")
+    monkeypatch.setenv("HKT_MEMORY_PRUNE_MODE", "archive")
+    memory = HKTMv5(memory_dir=str(tmp_path / "memory"), llm_provider="zhipu")
+    memory.layers.vector_store = SimpleNamespace(
+        add=lambda **kwargs: True,
+        delete=lambda *args, **kwargs: True,
+    )
+
+    memory.layers.store_session_transcript(
+        content="第一条 transcript 记录的是旧的回放链路",
+        session_id="session-prune",
+        task_id="task-prune",
+        project="hktmemory",
+        branch="feat/session-search",
+        pr_id="202",
+    )
+    time.sleep(0.01)
+    latest = memory.layers.store_session_transcript(
+        content="第二条 transcript 记录的是新的独立索引链路",
+        session_id="session-prune",
+        task_id="task-prune",
+        project="hktmemory",
+        branch="feat/session-search",
+        pr_id="202",
+    )
+
+    assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 1
+    assert memory.layers.session_search(query="旧的回放链路", project="hktmemory", limit=5)["count"] == 0
+    assert memory.layers.session_search(query="独立索引链路", project="hktmemory", limit=5)["results"][0]["id"] == latest["L2"]
+
+    rebuild = memory.rebuild()
+    session_index = rebuild["session_transcript_index"]
+    assert session_index["success"] is True
+    assert session_index["source_entries"] == 1
+    assert session_index["indexed"] == 1
+    assert memory.layers.session_transcript_index.get_stats()["total_documents"] == 1
 
 
 def test_pin_importance_feedback_and_rebuild(tmp_path):
