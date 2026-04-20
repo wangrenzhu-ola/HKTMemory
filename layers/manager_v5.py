@@ -9,6 +9,7 @@ Layer Manager v5.0 - 自动分层存储
 """
 
 import sys
+import json
 import re
 import hashlib
 from pathlib import Path
@@ -192,6 +193,204 @@ class LayerManagerV5:
             if metadata.get("artifact_ingest_key") == dedupe_key:
                 return memory_id
         return None
+
+    def store_session_transcript(
+        self,
+        content: str,
+        session_id: str,
+        title: str = "",
+        topic: str = "session",
+        task_id: Optional[str] = None,
+        project: Optional[str] = None,
+        branch: Optional[str] = None,
+        pr_id: Optional[str] = None,
+        source: str = "auto_capture",
+        source_mode: str = "direct",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        transcript_metadata = dict(metadata or {})
+        transcript_metadata.update(
+            {
+                "scope": transcript_metadata.get("scope") or f"session:{session_id}",
+                "artifact_type": "session_transcript",
+                "session_id": session_id,
+                "task_id": task_id,
+                "project": project,
+                "branch": branch,
+                "pr_id": pr_id,
+                "source": source,
+                "source_mode": source_mode,
+            }
+        )
+        return self.store(
+            content=content,
+            title=title or f"Session transcript: {session_id}",
+            layer="L2",
+            topic=topic,
+            metadata=transcript_metadata,
+            auto_extract=False,
+        )
+
+    def _is_session_transcript_entry(self, entry: Dict[str, Any]) -> bool:
+        metadata = entry.get("metadata", {}) or {}
+        scope = str(entry.get("scope") or metadata.get("scope") or "")
+        return (
+            metadata.get("artifact_type") == "session_transcript"
+            or metadata.get("source") == "auto_capture"
+            or scope.startswith("session:")
+        )
+
+    def _extract_session_field(self, entry: Dict[str, Any], field: str) -> Optional[str]:
+        metadata = entry.get("metadata", {}) or {}
+        value = entry.get(field)
+        if value in (None, ""):
+            value = metadata.get(field)
+        if value in (None, "") and field == "session_id":
+            scope = str(entry.get("scope") or metadata.get("scope") or "")
+            if scope.startswith("session:"):
+                value = scope.split(":", 1)[1]
+        if value in (None, ""):
+            return None
+        return str(value)
+
+    def _matches_session_filters(
+        self,
+        entry: Dict[str, Any],
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        project: Optional[str] = None,
+        branch: Optional[str] = None,
+        pr_id: Optional[str] = None,
+    ) -> bool:
+        filters = {
+            "session_id": session_id,
+            "task_id": task_id,
+            "project": project,
+            "branch": branch,
+            "pr_id": pr_id,
+        }
+        for field, expected in filters.items():
+            if expected in (None, ""):
+                continue
+            if self._extract_session_field(entry, field) != str(expected):
+                return False
+        return True
+
+    def _build_recent_session_results(self, entries: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for entry in entries:
+            resolved_session_id = self._extract_session_field(entry, "session_id") or entry.get("id")
+            timestamp = str(entry.get("timestamp") or "")
+            existing = grouped.get(resolved_session_id)
+            if existing is None or timestamp > existing["latest_timestamp"]:
+                entry_count = (existing or {}).get("entry_count", 0) + 1
+                grouped[resolved_session_id] = {
+                    "session_id": resolved_session_id,
+                    "scope": entry.get("scope") or f"session:{resolved_session_id}",
+                    "task_id": self._extract_session_field(entry, "task_id"),
+                    "project": self._extract_session_field(entry, "project"),
+                    "branch": self._extract_session_field(entry, "branch"),
+                    "pr_id": self._extract_session_field(entry, "pr_id"),
+                    "latest_timestamp": timestamp,
+                    "latest_memory_id": entry.get("id"),
+                    "summary": str(entry.get("content", ""))[:240],
+                    "title": entry.get("title"),
+                    "entry_count": entry_count,
+                }
+            else:
+                existing["entry_count"] += 1
+        results = sorted(grouped.values(), key=lambda item: item.get("latest_timestamp", ""), reverse=True)
+        return results[:limit]
+
+    def session_search(
+        self,
+        query: str = "",
+        limit: int = 5,
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        project: Optional[str] = None,
+        branch: Optional[str] = None,
+        pr: Optional[str] = None,
+        pr_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        resolved_pr_id = pr_id or pr
+        session_entries: List[Dict[str, Any]] = []
+        for entry in self.l2.iter_entries(scope="all"):
+            memory_id = entry.get("id")
+            if memory_id and not self.lifecycle.is_visible(memory_id):
+                continue
+            if not self._is_session_transcript_entry(entry):
+                continue
+            if not self._matches_session_filters(
+                entry,
+                session_id=session_id,
+                task_id=task_id,
+                project=project,
+                branch=branch,
+                pr_id=resolved_pr_id,
+            ):
+                continue
+            session_entries.append(entry)
+
+        normalized_query = (query or "").strip()
+        if not normalized_query:
+            recent_results = self._build_recent_session_results(session_entries, limit)
+            touched_ids = [item["latest_memory_id"] for item in recent_results if item.get("latest_memory_id")]
+            if touched_ids:
+                self.lifecycle.touch(touched_ids, event_type="recent")
+            return {
+                "success": True,
+                "mode": "recent",
+                "count": len(recent_results),
+                "results": recent_results,
+            }
+
+        haystacks = []
+        for entry in session_entries:
+            metadata = entry.get("metadata", {}) or {}
+            haystacks.append(
+                "\n".join(
+                    [
+                        str(entry.get("title", "")),
+                        str(entry.get("content", "")),
+                        json.dumps(metadata, ensure_ascii=False),
+                    ]
+                )
+            )
+        matches = match_query_corpus(normalized_query, haystacks)
+        results: List[Dict[str, Any]] = []
+        for entry, combined, match in zip(session_entries, haystacks, matches):
+            if not match.get("matched"):
+                continue
+            results.append(
+                {
+                    "id": entry.get("id"),
+                    "session_id": self._extract_session_field(entry, "session_id"),
+                    "task_id": self._extract_session_field(entry, "task_id"),
+                    "project": self._extract_session_field(entry, "project"),
+                    "branch": self._extract_session_field(entry, "branch"),
+                    "pr_id": self._extract_session_field(entry, "pr_id"),
+                    "scope": entry.get("scope"),
+                    "timestamp": entry.get("timestamp"),
+                    "title": entry.get("title"),
+                    "content": entry.get("content", ""),
+                    "preview": self.l2._extract_preview(combined, normalized_query),
+                    "_match_score": match.get("score", 0.0),
+                    "_bm25_score": match.get("bm25_score", 0.0),
+                    "_debug_match": match,
+                }
+            )
+        results.sort(key=lambda item: (item.get("_match_score", 0.0), item.get("timestamp", "")), reverse=True)
+        limited = results[:limit]
+        touched_ids = [item["id"] for item in limited if item.get("id")]
+        if touched_ids:
+            self.lifecycle.touch(touched_ids, event_type="session_search")
+        return {
+            "success": True,
+            "mode": "search",
+            "count": len(limited),
+            "results": limited,
+        }
     
     def store(self,
               content: str,
