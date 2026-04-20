@@ -46,6 +46,7 @@ class MemoryMCPServer:
         # Tool routing
         tool_map = {
             "memory_recall": self.tools.memory_recall,
+            "memory_session_search": self.tools.memory_session_search,
             "memory_store": self.tools.memory_store,
             "memory_forget": self.tools.memory_forget,
             "memory_restore": self.tools.memory_restore,
@@ -107,6 +108,20 @@ class MemoryMCPServer:
                         "query": {"type": "string", "required": True},
                         "layer": {"type": "string", "default": "all"},
                         "limit": {"type": "integer", "default": 5}
+                    }
+                },
+                {
+                    "name": "memory_session_search",
+                    "description": "Search session transcripts or list recent sessions when query is empty",
+                    "parameters": {
+                        "query": {"type": "string", "default": ""},
+                        "limit": {"type": "integer", "default": 5},
+                        "session_id": {"type": "string"},
+                        "task_id": {"type": "string"},
+                        "project": {"type": "string"},
+                        "branch": {"type": "string"},
+                        "pr": {"type": "string"},
+                        "pr_id": {"type": "string"}
                     }
                 },
                 {

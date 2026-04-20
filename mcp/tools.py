@@ -67,6 +67,31 @@ class MemoryTools:
                 }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def memory_session_search(
+        self,
+        query: str = "",
+        limit: int = 5,
+        session_id: str = None,
+        task_id: str = None,
+        project: str = None,
+        branch: str = None,
+        pr: str = None,
+        pr_id: str = None,
+    ) -> Dict[str, Any]:
+        try:
+            return self.layers.session_search(
+                query=query,
+                limit=limit,
+                session_id=session_id,
+                task_id=task_id,
+                project=project,
+                branch=branch,
+                pr=pr,
+                pr_id=pr_id,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def memory_store(self, content: str, title: str = "", 
                      layer: str = "all", topic: str = "general",
