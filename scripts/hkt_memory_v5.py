@@ -70,7 +70,11 @@ class HKTMv5:
             llm_provider=llm_provider or os.getenv("L1_EXTRACTOR_PROVIDER", "zhipu"),
             config=self.config
         )
-        orchestrator_config = self.config.get("automation", {}).get("orchestrator", {})
+        automation_config = self.config.get("automation", {})
+        orchestrator_config = {
+            **automation_config.get("orchestrator", {}),
+            "safety": automation_config.get("safety", {}),
+        }
         self.provider = LocalMemoryProvider(
             self.layers,
             cache_ttl_seconds=orchestrator_config.get("prefetch_ttl_seconds", 300),

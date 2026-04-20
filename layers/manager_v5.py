@@ -35,6 +35,7 @@ from retrieval.intent import detect_intent
 from retrieval.expansion import expand_query
 from retrieval.bm25_index import BM25Index
 from retrieval.dedup import dedup_results, compiled_truth_guarantee
+from runtime.safety import MemorySafetyGate
 
 
 class LayerManagerV5:
@@ -83,6 +84,9 @@ class LayerManagerV5:
         self.learnings = LearningTracker(self.base_path / "governance")
         self.errors = ErrorTracker(self.base_path / "governance")
         self.noise_filter = NoiseFilter()
+        self.safety_gate = MemorySafetyGate(
+            self.config.get("automation", {}).get("safety", {})
+        )
         self.entity_index = EntityIndex(self.base_path / "entity_index.db")
         self.session_transcript_index = None
         self._session_transcript_index_error: Optional[str] = None
@@ -314,6 +318,7 @@ class LayerManagerV5:
         source_mode: str = "direct",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
+        safety_analysis = self.safety_gate.sanitize_for_storage(content)
         transcript_metadata = dict(metadata or {})
         transcript_metadata.update(
             {
@@ -326,16 +331,20 @@ class LayerManagerV5:
                 "pr_id": pr_id,
                 "source": source,
                 "source_mode": source_mode,
+                "safety": self.safety_gate.summarize_for_metadata(safety_analysis),
             }
         )
-        return self.store(
-            content=content,
+        result = self.store(
+            content=safety_analysis["content"],
             title=title or f"Session transcript: {session_id}",
             layer="L2",
             topic=topic,
             metadata=transcript_metadata,
             auto_extract=False,
         )
+        result["safety"] = transcript_metadata["safety"]
+        result["redacted_before_store"] = bool(safety_analysis.get("redactions"))
+        return result
 
     def _is_session_transcript_entry(self, entry: Dict[str, Any]) -> bool:
         metadata = entry.get("metadata", {}) or {}
@@ -402,6 +411,7 @@ class LayerManagerV5:
                     "summary": str(entry.get("content", ""))[:240],
                     "title": entry.get("title"),
                     "entry_count": entry_count,
+                    "metadata": entry.get("metadata", {}),
                 }
             else:
                 existing["entry_count"] += 1
@@ -484,6 +494,7 @@ class LayerManagerV5:
                             "title": entry.get("title"),
                             "content": entry.get("content", ""),
                             "preview": self.l2._extract_preview(combined, normalized_query),
+                            "metadata": entry.get("metadata", {}),
                             "_match_score": float(indexed.get("score", 0.0)),
                             "_bm25_score": float(indexed.get("score", 0.0)),
                             "_debug_match": {
@@ -535,6 +546,7 @@ class LayerManagerV5:
                     "title": entry.get("title"),
                     "content": entry.get("content", ""),
                     "preview": self.l2._extract_preview(combined, normalized_query),
+                    "metadata": entry.get("metadata", {}),
                     "_match_score": match.get("score", 0.0),
                     "_bm25_score": match.get("bm25_score", 0.0),
                     "_debug_match": match,
@@ -868,6 +880,14 @@ class LayerManagerV5:
             queries = self._expand_query_sync(retrieval_query, debug_info)
         if debug_info is not None:
             debug_info["queries"] = queries
+            if not vector_store_available:
+                self._vector_retrieve_l2(
+                    query=queries[0] if queries else retrieval_query,
+                    topic=topic,
+                    limit=inner_limit,
+                    min_similarity=hybrid_options["min_similarity"],
+                    debug_info=debug_info,
+                )
 
         keyword_results = self.l2.search(query=queries[0], scope="all") if queries[0] else []
         if topic:
@@ -876,20 +896,22 @@ class LayerManagerV5:
         vector_lists: List[List[Dict[str, Any]]] = []
         query_embedding = None
         if vector_store_available:
-            for q in queries:
+            for index, q in enumerate(queries):
                 vector_lists.append(
                     self._vector_retrieve_l2(
                         query=q,
                         topic=topic,
                         limit=inner_limit,
                         min_similarity=hybrid_options["min_similarity"],
-                        debug_info=None,
+                        debug_info=debug_info if index == 0 else None,
                     )
                 )
             query_embedding = self._get_query_embedding(queries[0])
 
         retrieval_config = self.config.get("retrieval", {}) if isinstance(self.config, dict) else {}
         fusion_method = str(retrieval_config.get("fusion_method", "rrf")).strip().lower()
+        if vector_weight is not None or bm25_weight is not None:
+            fusion_method = "weighted"
         if not vector_store_available:
             fusion_method = "weighted"
         if debug_info is not None:

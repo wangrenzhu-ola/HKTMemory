@@ -29,7 +29,11 @@ class MemoryTools:
 
         config = ConfigLoader(self.memory_dir.parent).load()
         self.layers = LayerManagerV5(self.memory_dir, config=config)
-        orchestrator_config = config.get("automation", {}).get("orchestrator", {})
+        automation_config = config.get("automation", {})
+        orchestrator_config = {
+            **automation_config.get("orchestrator", {}),
+            "safety": automation_config.get("safety", {}),
+        }
         self.provider = LocalMemoryProvider(
             self.layers,
             cache_ttl_seconds=orchestrator_config.get("prefetch_ttl_seconds", 300),
