@@ -372,7 +372,7 @@ def test_server_capabilities_version():
         tool_names = {t["name"] for t in caps["tools"]}
         assert "memory_cleanup" in tool_names
         required = {
-            "memory_store", "memory_recall", "memory_session_search", "memory_forget",
+            "memory_store", "memory_recall", "memory_orchestrate_recall", "memory_session_search", "memory_forget",
             "memory_restore", "memory_stats", "memory_list",
             "self_improvement_log", "self_improvement_extract_skill",
         }
@@ -403,3 +403,34 @@ def test_mcp_server_memory_session_search_tool(tmp_path):
     assert response["tool"] == "memory_session_search"
     assert response["result"]["success"] is True
     assert response["result"]["count"] >= 1
+
+
+def test_mcp_server_memory_orchestrate_recall_tool(tmp_path):
+    from mcp.server import MemoryMCPServer
+
+    server = MemoryMCPServer(str(tmp_path / "memory"))
+    server.tools.layers.store_session_transcript(
+        content="上次排查这个问题时，debug 模式优先回放 transcript，再看构建日志。",
+        session_id="session-orchestrator",
+        task_id="task-orchestrator",
+        project="hktmemory",
+        branch="feat/orchestrator",
+        pr_id="106",
+    )
+
+    response = server.handle_request(
+        {
+            "tool": "memory_orchestrate_recall",
+            "params": {
+                "query": "上次排查这个问题怎么做",
+                "mode": "debug",
+                "project": "hktmemory",
+                "limit": 5,
+            },
+        }
+    )
+
+    assert response["success"] is True
+    assert response["tool"] == "memory_orchestrate_recall"
+    assert response["result"]["success"] is True
+    assert response["result"]["sources"][0]["source"] == "session"

@@ -135,6 +135,13 @@
       "top_k": 5,
       "threshold": 0.3,
       "max_tokens": 512
+    },
+    "orchestrator": {
+      "enabled": true,
+      "source_limit": 5,
+      "max_tokens": 512,
+      "prefetch_ttl_seconds": 300,
+      "prefetch_cache_entries": 32
     }
   },
   "governance": {
@@ -167,6 +174,7 @@
     "enabled": true,
     "tools": [
       "memory_recall",
+      "memory_orchestrate_recall",
       "memory_session_search",
       "memory_store",
       "memory_forget",
