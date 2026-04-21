@@ -21,7 +21,7 @@ class MemorySafetyGate:
         (
             "credential_assignment",
             re.compile(
-                r"\b(api[_-]?key|access[_-]?token|token|password|passwd|secret)\s*[:=]\s*([^\s'\"`;,]+)",
+                r"(?<![A-Za-z0-9])(api[_-]?key|access[_-]?token|token|password|passwd|secret)\s*[:=]\s*('[^']*'|\"[^\"]*\"|`[^`]*`|[^\s'\"`;,]+)",
                 re.IGNORECASE,
             ),
         ),
