@@ -349,11 +349,11 @@ class LayerManagerV5:
     def _is_session_transcript_entry(self, entry: Dict[str, Any]) -> bool:
         metadata = entry.get("metadata", {}) or {}
         scope = str(entry.get("scope") or metadata.get("scope") or "")
-        return (
-            metadata.get("artifact_type") == "session_transcript"
-            or metadata.get("source") == "auto_capture"
-            or scope.startswith("session:")
-        )
+        if metadata.get("artifact_type") == "session_transcript":
+            return True
+        if metadata.get("source") == "auto_capture" and scope.startswith("session:"):
+            return True
+        return False
 
     def _extract_session_field(self, entry: Dict[str, Any], field: str) -> Optional[str]:
         metadata = entry.get("metadata", {}) or {}
@@ -713,9 +713,13 @@ class LayerManagerV5:
         result = {"L2": l2_id}
         self._attach_lifecycle_status(result, lifecycle_result, prune_result)
         if entry and self._is_session_transcript_entry(entry):
-            self._sync_session_transcript_index_memory(l2_id)
+            sync_ok = self._sync_session_transcript_index_memory(l2_id)
+            if not sync_ok:
+                print(f"⚠️ Session transcript index sync failed for {l2_id}")
         for pruned_id in prune_result.get("pruned", []):
-            self._remove_session_transcript_index_entry(pruned_id)
+            removed_ok = self._remove_session_transcript_index_entry(pruned_id)
+            if not removed_ok:
+                print(f"⚠️ Session transcript index removal failed for {pruned_id}")
         if prune_result.get("triggered"):
             result["pruned"] = prune_result.get("pruned", [])
         return result
@@ -1254,13 +1258,11 @@ class LayerManagerV5:
                 "removed_from_l2": removed,
                 "removed_from_vector_store": vector_removed,
                 "removed_from_session_transcript_index": transcript_removed,
-                "aggregate_rebuild": self.rebuild_aggregates(),
             }
         transcript_removed = self._remove_session_transcript_index_entry(memory_id) if is_session_transcript else False
         return {
             **result,
             "removed_from_session_transcript_index": transcript_removed,
-            "aggregate_rebuild": self.rebuild_aggregates(),
         }
 
     def restore(self, memory_id: str) -> Dict[str, Any]:
@@ -1271,7 +1273,6 @@ class LayerManagerV5:
         return {
             **result,
             "restored_to_session_transcript_index": transcript_reindexed,
-            "aggregate_rebuild": self.rebuild_aggregates(),
         }
 
     def cleanup(self, dry_run: bool = False, scope: Optional[str] = None) -> Dict[str, Any]:

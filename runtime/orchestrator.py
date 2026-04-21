@@ -127,7 +127,7 @@ class RecallOrchestrator:
                     redacted_items += 1
                 item = injection_item
                 snippet = self._context_snippet(item)
-                if total_chars + len(snippet) > budget_chars and results:
+                if total_chars + len(snippet) > budget_chars:
                     break
                 total_chars += len(snippet)
                 enriched = {
@@ -188,6 +188,7 @@ class RecallOrchestrator:
         aliases = {
             "start": "task_start",
             "task-start": "task_start",
+            "task_start": "task_start",
             "implement": "implement",
             "implementation": "implement",
             "debug": "debug",
@@ -322,11 +323,11 @@ class RecallOrchestrator:
     def _is_session_transcript_like(self, item: Dict[str, Any]) -> bool:
         metadata = item.get("metadata", {}) or {}
         scope = str(item.get("scope") or metadata.get("scope") or "")
-        return (
-            metadata.get("artifact_type") == "session_transcript"
-            or metadata.get("source") == "auto_capture"
-            or scope.startswith("session:")
-        )
+        if metadata.get("artifact_type") == "session_transcript":
+            return True
+        if metadata.get("source") == "auto_capture" and scope.startswith("session:"):
+            return True
+        return False
 
     def _omitted_reason(self, source_name: str, mode: str, should_lookup: bool, query: str) -> str:
         if source_name == "long_term" and not should_lookup:

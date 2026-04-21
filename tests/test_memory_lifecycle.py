@@ -35,32 +35,29 @@ def test_soft_delete_restore_and_hard_delete(tmp_path):
     soft_deleted = memory.forget(memory_id=memory_id)
     assert soft_deleted["success"] is True
     assert soft_deleted["status"] == "disabled"
-    assert soft_deleted["aggregate_rebuild"]["rebuilt"] == 0
 
-    after_soft_delete = memory.retrieve(query="staging", layer="L2", limit=10)
+    after_soft_delete = memory.retrieve(query="staging", layer="all", limit=10)
     assert all(item["id"] != memory_id for item in after_soft_delete["L2"])
-    assert not l1_topic_file.exists() or memory_id not in l1_topic_file.read_text(encoding="utf-8")
-    assert not l0_topic_file.exists() or memory_id not in l0_topic_file.read_text(encoding="utf-8")
+    assert all(item.get("source_l2") != memory_id for item in after_soft_delete.get("L1", []))
+    assert all(item.get("source_l2") != memory_id for item in after_soft_delete.get("L0", []))
 
     restored = memory.restore(memory_id=memory_id)
     assert restored["success"] is True
     assert restored["status"] == "active"
-    assert restored["aggregate_rebuild"]["rebuilt"] == 1
 
-    after_restore = memory.retrieve(query="staging", layer="L2", limit=10)
+    after_restore = memory.retrieve(query="staging", layer="all", limit=10)
     assert any(item["id"] == memory_id for item in after_restore["L2"])
-    assert memory_id in l1_topic_file.read_text(encoding="utf-8")
-    assert memory_id in l0_topic_file.read_text(encoding="utf-8")
+    assert any(item.get("source_l2") == memory_id for item in after_restore.get("L1", []))
+    assert any(item.get("source_l2") == memory_id for item in after_restore.get("L0", []))
 
     hard_deleted = memory.forget(memory_id=memory_id, force=True)
     assert hard_deleted["success"] is True
     assert hard_deleted["removed_from_l2"] is True
-    assert hard_deleted["aggregate_rebuild"]["rebuilt"] == 0
 
-    after_hard_delete = memory.retrieve(query="staging", layer="L2", limit=10)
+    after_hard_delete = memory.retrieve(query="staging", layer="all", limit=10)
     assert all(item["id"] != memory_id for item in after_hard_delete["L2"])
-    assert not l1_topic_file.exists() or memory_id not in l1_topic_file.read_text(encoding="utf-8")
-    assert not l0_topic_file.exists() or memory_id not in l0_topic_file.read_text(encoding="utf-8")
+    assert all(item.get("source_l2") != memory_id for item in after_hard_delete.get("L1", []))
+    assert all(item.get("source_l2") != memory_id for item in after_hard_delete.get("L0", []))
 
 
 def test_cleanup_and_prune(monkeypatch, tmp_path):
