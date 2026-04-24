@@ -39,6 +39,7 @@ HKT-Memory v5.0 - 自动分层存储系统
 """
 
 import argparse
+from contextlib import redirect_stdout
 import json
 import os
 import sys
@@ -63,6 +64,7 @@ from layers.manager_v5 import LayerManagerV5
 from config.loader import ConfigLoader
 from runtime.orchestrator import RecallOrchestrator, RecallRequest
 from runtime.provider import LocalMemoryProvider
+from runtime.task_memory import TaskMemoryRuntime, parse_json_payload, skipped_result
 
 
 class HKTMv5:
@@ -330,6 +332,32 @@ class HKTMv5:
     def conflict_scan(self, output_path: str = None) -> Dict[str, Any]:
         return self.layers.scan_conflicts(output_path=output_path)
 
+    def task_recall(self, envelope: Dict[str, Any], limit: int = 5, token_budget: int = 1600) -> Dict[str, Any]:
+        return TaskMemoryRuntime(self).task_recall(envelope, limit=limit, token_budget=token_budget)
+
+    def task_capture(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        return TaskMemoryRuntime(self).task_capture(event)
+
+    def task_ledger(
+        self,
+        project: str,
+        task_id: str,
+        branch: str = None,
+        raw: bool = False,
+    ) -> Dict[str, Any]:
+        return TaskMemoryRuntime(self).task_ledger(project=project, task_id=task_id, branch=branch, raw=raw)
+
+    def task_trace(self, trace_id: str, view: str = "summary") -> Dict[str, Any]:
+        return TaskMemoryRuntime(self).task_trace(trace_id=trace_id, view=view)
+
+
+def _read_json_cli_payload(raw: str, file_path: str, label: str) -> Dict[str, Any]:
+    if file_path:
+        raw = Path(file_path).read_text(encoding="utf-8")
+    if not raw:
+        raise ValueError(f"{label} JSON is required")
+    return parse_json_payload(raw, label)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -451,6 +479,30 @@ def main():
     orchestrator_parser.add_argument("--no-session", action="store_true", help="禁用 transcript source")
     orchestrator_parser.add_argument("--no-long-term", action="store_true", help="禁用长期记忆 source")
 
+    task_recall_parser = subparsers.add_parser("task-recall", help="Gale task memory recall JSON contract")
+    task_recall_parser.add_argument("--json", action="store_true", help="输出 JSON（task 命令默认启用）")
+    task_recall_parser.add_argument("--envelope", help="Task envelope JSON")
+    task_recall_parser.add_argument("--envelope-file", help="从文件读取 task envelope JSON")
+    task_recall_parser.add_argument("--limit", "-n", type=int, default=5, help="结果数量")
+    task_recall_parser.add_argument("--token-budget", type=int, default=1600, help="注入 token 预算")
+
+    task_capture_parser = subparsers.add_parser("task-capture", help="Gale task memory capture JSON contract")
+    task_capture_parser.add_argument("--json", action="store_true", help="输出 JSON（task 命令默认启用）")
+    task_capture_parser.add_argument("--event", help="Capture event JSON")
+    task_capture_parser.add_argument("--event-file", help="从文件读取 capture event JSON")
+
+    task_ledger_parser = subparsers.add_parser("task-ledger", help="读取 task-scoped hot ledger")
+    task_ledger_parser.add_argument("--json", action="store_true", help="输出 JSON（task 命令默认启用）")
+    task_ledger_parser.add_argument("--project", required=True, help="项目名")
+    task_ledger_parser.add_argument("--task-id", required=True, help="任务 ID")
+    task_ledger_parser.add_argument("--branch", help="可选 branch scope")
+    task_ledger_parser.add_argument("--raw", action="store_true", help="显式请求 raw events")
+
+    task_trace_parser = subparsers.add_parser("task-trace", help="读取 lightweight task memory trace")
+    task_trace_parser.add_argument("--json", action="store_true", help="输出 JSON（task 命令默认启用）")
+    task_trace_parser.add_argument("--trace-id", required=True, help="Trace ID")
+    task_trace_parser.add_argument("--view", choices=["summary", "raw"], default="summary", help="Trace view")
+
     # Sync command
     sync_parser = subparsers.add_parser("sync", help="同步各层")
     sync_parser.add_argument(
@@ -540,11 +592,20 @@ def main():
         parser.print_help()
         return
     
-    # 初始化
-    memory = HKTMv5(
-        memory_dir=args.memory_dir,
-        llm_provider=args.llm_provider
-    )
+    json_only_commands = {"task-recall", "task-capture", "task-ledger", "task-trace"}
+
+    # 初始化。task-* 命令必须保持 stdout JSON-only，所以初始化期 warning 转到 stderr。
+    if args.command in json_only_commands:
+        with redirect_stdout(sys.stderr):
+            memory = HKTMv5(
+                memory_dir=args.memory_dir,
+                llm_provider=args.llm_provider
+            )
+    else:
+        memory = HKTMv5(
+            memory_dir=args.memory_dir,
+            llm_provider=args.llm_provider
+        )
     
     if args.command == "store":
         print("📝 存储记忆...")
@@ -712,6 +773,35 @@ def main():
         )
         print("🧭 Orchestrated Recall\n")
         print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "task-recall":
+        try:
+            envelope = _read_json_cli_payload(args.envelope, args.envelope_file, "envelope")
+            result = memory.task_recall(envelope, limit=args.limit, token_budget=args.token_budget)
+        except Exception as exc:
+            result = skipped_result(str(exc))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+    elif args.command == "task-capture":
+        try:
+            event = _read_json_cli_payload(args.event, args.event_file, "event")
+            result = memory.task_capture(event)
+        except Exception as exc:
+            result = skipped_result(str(exc))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+    elif args.command == "task-ledger":
+        result = memory.task_ledger(
+            project=args.project,
+            task_id=args.task_id,
+            branch=args.branch,
+            raw=args.raw,
+        )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+    elif args.command == "task-trace":
+        result = memory.task_trace(trace_id=args.trace_id, view=args.view)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     
     elif args.command == "sync":
         print("🔄 同步各层...")
