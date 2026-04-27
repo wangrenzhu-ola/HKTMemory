@@ -101,6 +101,10 @@ uv run scripts/hkt_memory_v5.py rebuild           # 重建并压缩聚合文件
 # 统计
 uv run scripts/hkt_memory_v5.py stats
 
+# Root/status/doctor
+uv run scripts/hkt_memory_v5.py status
+uv run scripts/hkt_memory_v5.py doctor --json
+
 # 遗忘/恢复
 uv run scripts/hkt_memory_v5.py forget --memory-id "xxx"
 uv run scripts/hkt_memory_v5.py restore --memory-id "xxx"
@@ -170,7 +174,20 @@ v5.3.0 新增面向研发流程的 task memory runtime contract。GaleHarnessCod
 | 需要回忆历史上下文 | `retrieve --layer all` |
 | 需要按主题聚合信息 | `store/retrieve --topic <topic>` |
 | 需要全量重建索引与摘要 | `sync --full` |
-| 需要检查健康状态 | `stats` |
+| 需要检查健康状态 | `status` / `doctor` |
+
+## Memory Root 优先级
+
+HKT-Memory 使用同一套 root 解析规则，供 CLI、MCP 与程序化 `HKTMv5` client 共用。优先级从高到低：
+
+1. 显式传入的 `--memory-dir` 或 `HKTMv5(memory_dir=...)`
+2. `HKT_MEMORY_ROOT`
+3. `HKT_MEMORY_DIR`（兼容旧配置）
+4. `HKT_MEMORY_PUBLIC_ROOT`
+5. `config/default.json` 的 `storage.public_root` 或 `storage.base_dir`
+6. 默认项目本地 `memory`
+
+`status` / `doctor` 会显示实际 root、root 来源、provider、可写性、三层目录、索引文件与 vector backend 状态，便于 GaleHarness 调用侧确认当前使用的 public memory root。
 
 ## 环境变量
 
@@ -179,7 +196,9 @@ v5.3.0 新增面向研发流程的 task memory runtime contract。GaleHarnessCod
 | `ZHIPU_API_KEY` | 智谱 AI API Key | - |
 | `OPENAI_API_KEY` | OpenAI API Key | - |
 | `L1_EXTRACTOR_PROVIDER` | LLM 提供商 | `zhipu` |
-| `HKT_MEMORY_DIR` | 记忆存储目录 | `memory` |
+| `HKT_MEMORY_ROOT` | 首选记忆存储目录 | - |
+| `HKT_MEMORY_DIR` | 兼容旧版的记忆存储目录 | - |
+| `HKT_MEMORY_PUBLIC_ROOT` | 公共知识库 root | - |
 | `HKT_MEMORY_LIFECYCLE_ENABLED` | 启用生命周期 | `true` |
 | `HKT_MAX_TOKENS` | auto_recall 输出 token 上限 | `512` |
 | `HKT_QUERY` / `CLAUDE_CONTEXT` | auto_recall 查询词来源 | - |

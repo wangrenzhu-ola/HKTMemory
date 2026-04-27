@@ -58,6 +58,7 @@ class MemoryMCPServer:
             "memory_feedback": self.tools.memory_feedback,
             "memory_cleanup": self.tools.memory_cleanup,
             "memory_rebuild": self.tools.memory_rebuild,
+            "memory_status": self.tools.memory_status,
             "memory_stats": self.tools.memory_stats,
             "memory_list": self.tools.memory_list,
             "self_improvement_log": self.tools.self_improvement_log,
@@ -246,6 +247,11 @@ class MemoryMCPServer:
                     "parameters": {
                         "include_archived": {"type": "boolean", "default": False}
                     }
+                },
+                {
+                    "name": "memory_status",
+                    "description": "Show resolved memory root, provider, writability, layers, and indexes",
+                    "parameters": {}
                 },
                 {
                     "name": "memory_stats",
