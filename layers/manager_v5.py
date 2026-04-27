@@ -12,6 +12,7 @@ import sys
 import json
 import re
 import hashlib
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
@@ -312,46 +313,107 @@ class LayerManagerV5:
         topic: str = "session",
         task_id: Optional[str] = None,
         project: Optional[str] = None,
+        repo_root: Optional[str] = None,
         branch: Optional[str] = None,
         pr_id: Optional[str] = None,
         source: str = "auto_capture",
         source_mode: str = "direct",
+        importance: str = "medium",
+        max_chars: int = 12000,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
+        if not (content or "").strip():
+            return {"success": False, "skipped": True, "reason": "empty transcript content", "memory_ids": {}}
+        resolved_session_id = (session_id or "").strip() or f"session-{uuid.uuid4().hex[:12]}"
+        normalized_importance = str(importance or "medium").lower()
+        if normalized_importance not in {"high", "medium", "low"}:
+            normalized_importance = "medium"
         safety_analysis = self.safety_gate.sanitize_for_storage(content)
+        stored_content = self._compress_session_transcript(safety_analysis["content"], max_chars=max_chars)
+        content_hash = hashlib.sha256(stored_content.encode("utf-8")).hexdigest()
         transcript_metadata = dict(metadata or {})
+        dedupe_key = transcript_metadata.get("dedupe_key") or "|".join(
+            [str(project or ""), str(task_id or ""), resolved_session_id, content_hash]
+        )
+        existing = self._find_existing_session_transcript(str(dedupe_key))
+        if existing:
+            return {
+                "success": True,
+                "deduplicated": True,
+                "existing_memory_id": existing,
+                "memory_ids": {"L2": existing},
+                "dedupe_key": dedupe_key,
+            }
+        captured_at = transcript_metadata.get("captured_at") or datetime.utcnow().isoformat()
         transcript_metadata.update(
             {
-                "scope": transcript_metadata.get("scope") or f"session:{session_id}",
+                "scope": transcript_metadata.get("scope") or f"session:{resolved_session_id}",
                 "artifact_type": "session_transcript",
-                "session_id": session_id,
+                "session_id": resolved_session_id,
                 "task_id": task_id,
                 "project": project,
+                "repo_root": repo_root,
                 "branch": branch,
                 "pr_id": pr_id,
                 "source": source,
                 "source_mode": source_mode,
+                "captured_at": captured_at,
+                "content_hash": content_hash,
+                "dedupe_key": dedupe_key,
+                "importance": normalized_importance,
+                "compression": {
+                    "original_chars": len(safety_analysis["content"]),
+                    "stored_chars": len(stored_content),
+                    "max_chars": max_chars,
+                    "truncated": len(stored_content) < len(safety_analysis["content"]),
+                },
                 "safety": self.safety_gate.summarize_for_metadata(safety_analysis),
             }
         )
         result = self.store(
-            content=safety_analysis["content"],
-            title=title or f"Session transcript: {session_id}",
+            content=stored_content,
+            title=title or f"Session transcript: {resolved_session_id}",
             layer="L2",
             topic=topic,
             metadata=transcript_metadata,
             auto_extract=False,
         )
+        memory_id = result.get("L2")
+        if memory_id:
+            self._sync_session_transcript_index_memory(memory_id)
+        result["success"] = True
+        result["deduplicated"] = False
+        result["dedupe_key"] = dedupe_key
         result["safety"] = transcript_metadata["safety"]
         result["redacted_before_store"] = bool(safety_analysis.get("redactions"))
+        result["metadata"] = transcript_metadata
         return result
+
+    def _compress_session_transcript(self, content: str, max_chars: int = 12000) -> str:
+        normalized = re.sub(r"\n{3,}", "\n\n", (content or "").strip())
+        if max_chars <= 0 or len(normalized) <= max_chars:
+            return normalized
+        head_budget = max(int(max_chars * 0.7), 1)
+        tail_budget = max(max_chars - head_budget - 80, 1)
+        return (
+            normalized[:head_budget].rstrip()
+            + "\n\n[... transcript compressed for storage ...]\n\n"
+            + normalized[-tail_budget:].lstrip()
+        )
+
+    def _find_existing_session_transcript(self, dedupe_key: str) -> Optional[str]:
+        for memory_id, entry in self.lifecycle._manifest.items():
+            metadata = entry.get("metadata", {})
+            if metadata.get("artifact_type") == "session_transcript" and metadata.get("dedupe_key") == dedupe_key:
+                return memory_id
+        return None
 
     def _is_session_transcript_entry(self, entry: Dict[str, Any]) -> bool:
         metadata = entry.get("metadata", {}) or {}
         scope = str(entry.get("scope") or metadata.get("scope") or "")
         if metadata.get("artifact_type") == "session_transcript":
             return True
-        if metadata.get("source") == "auto_capture" and scope.startswith("session:"):
+        if metadata.get("source") in {"auto_capture", "galeharness"} and scope.startswith("session:"):
             return True
         return False
 
