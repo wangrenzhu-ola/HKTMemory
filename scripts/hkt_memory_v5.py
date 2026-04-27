@@ -64,6 +64,7 @@ from layers.manager_v5 import LayerManagerV5
 from config.loader import ConfigLoader
 from runtime.orchestrator import RecallOrchestrator, RecallRequest
 from runtime.provider import LocalMemoryProvider
+from runtime.root import memory_root_status, resolve_memory_root
 from runtime.task_memory import TaskMemoryRuntime, parse_json_payload, skipped_result
 
 
@@ -71,14 +72,17 @@ class HKTMv5:
     """HKT-Memory v5.0 主类"""
     
     def __init__(self, memory_dir: str = None, llm_provider: str = None):
-        self.memory_dir = Path(memory_dir or os.environ.get("HKT_MEMORY_DIR", "memory"))
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.config = ConfigLoader(SCRIPT_DIR).load()
+        resolved_root = resolve_memory_root(memory_dir, config=self.config, cwd=SCRIPT_DIR)
+        self.memory_dir = resolved_root["path"]
+        self.memory_root_source = resolved_root["source"]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.llm_provider = llm_provider or os.getenv("L1_EXTRACTOR_PROVIDER", "zhipu")
         
         # 初始化分层管理器
         self.layers = LayerManagerV5(
             base_path=self.memory_dir,
-            llm_provider=llm_provider or os.getenv("L1_EXTRACTOR_PROVIDER", "zhipu"),
+            llm_provider=self.llm_provider,
             config=self.config
         )
         automation_config = self.config.get("automation", {})
@@ -271,6 +275,15 @@ class HKTMv5:
         """获取统计"""
         return self.layers.get_stats()
 
+    def status(self) -> Dict[str, Any]:
+        return memory_root_status(
+            self.memory_dir,
+            source=self.memory_root_source,
+            provider=self.llm_provider,
+            config=self.config,
+            layers=self.layers,
+        )
+
     def forget(self, memory_id: str, force: bool = False) -> Dict[str, Any]:
         return self.layers.forget(memory_id=memory_id, force=force)
 
@@ -367,8 +380,8 @@ def main():
     
     parser.add_argument(
         "--memory-dir",
-        default=os.getenv("HKT_MEMORY_DIR", "memory"),
-        help="记忆存储目录"
+        default=None,
+        help="记忆存储目录（默认按 root 解析优先级选择）"
     )
     parser.add_argument(
         "--llm-provider",
@@ -519,6 +532,11 @@ def main():
     # Stats command
     subparsers.add_parser("stats", help="显示统计")
 
+    status_parser = subparsers.add_parser("status", help="显示 memory root/status/doctor 信息")
+    status_parser.add_argument("--json", action="store_true", help="输出 JSON")
+    doctor_parser = subparsers.add_parser("doctor", help="检查 memory root/status/doctor 信息")
+    doctor_parser.add_argument("--json", action="store_true", help="输出 JSON")
+
     forget_parser = subparsers.add_parser("forget", help="遗忘记忆")
     forget_parser.add_argument("--memory-id", required=True, help="记忆ID")
     forget_parser.add_argument("--force", action="store_true", help="执行硬删除")
@@ -595,7 +613,9 @@ def main():
     json_only_commands = {"task-recall", "task-capture", "task-ledger", "task-trace"}
 
     # 初始化。task-* 命令必须保持 stdout JSON-only，所以初始化期 warning 转到 stderr。
-    if args.command in json_only_commands:
+    if args.command in json_only_commands or (
+        args.command in {"status", "doctor"} and getattr(args, "json", False)
+    ):
         with redirect_stdout(sys.stderr):
             memory = HKTMv5(
                 memory_dir=args.memory_dir,
@@ -829,6 +849,25 @@ def main():
             print(f"{'='*60}")
             for key, value in layer_stats.items():
                 print(f"   {key}: {value}")
+
+    elif args.command in {"status", "doctor"}:
+        status = memory.status()
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print("🩺 HKT-Memory Status\n")
+            print(f"   root: {status['root']}")
+            print(f"   root_source: {status['root_source']}")
+            print(f"   provider: {status['provider']}")
+            print(f"   writable: {status['writable']}")
+            print(f"   vector_backend: {status['vector_store']['backend']}")
+            print(f"   vector_available: {status['vector_store']['available']}")
+            print("\n   layers:")
+            for name, info in status["layers"].items():
+                print(f"     {name}: exists={info['exists']} path={info['path']}")
+            print("\n   indexes:")
+            for name, info in status["indexes"].items():
+                print(f"     {name}: exists={info['exists']} path={info['path']}")
 
     elif args.command == "forget":
         result = memory.forget(memory_id=args.memory_id, force=args.force)

@@ -26,9 +26,15 @@ class MemoryTools:
         from layers.manager_v5 import LayerManagerV5
         from runtime.orchestrator import RecallOrchestrator, RecallRequest
         from runtime.provider import LocalMemoryProvider
+        from runtime.root import memory_root_status, resolve_memory_root
 
         config = ConfigLoader(self.memory_dir.parent).load()
+        resolved_root = resolve_memory_root(str(self.memory_dir), config=config, cwd=self.memory_dir.parent)
+        self.memory_dir = resolved_root["path"]
+        self.memory_root_source = resolved_root["source"]
         self.layers = LayerManagerV5(self.memory_dir, config=config)
+        self._config = config
+        self._memory_root_status = memory_root_status
         automation_config = config.get("automation", {})
         orchestrator_config = {
             **automation_config.get("orchestrator", {}),
@@ -43,6 +49,18 @@ class MemoryTools:
         self._recall_request_cls = RecallRequest
         self.learnings = LearningTracker(self.memory_dir / "governance")
         self.errors = ErrorTracker(self.memory_dir / "governance")
+
+    def memory_status(self) -> Dict[str, Any]:
+        try:
+            return self._memory_root_status(
+                self.memory_dir,
+                source=self.memory_root_source,
+                provider="zhipu",
+                config=self._config,
+                layers=self.layers,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def memory_recall(self, query: str, layer: str = "all", limit: int = 5, entity: str = None) -> Dict[str, Any]:
         """
