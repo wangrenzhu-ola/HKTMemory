@@ -26,6 +26,7 @@ PUBLIC_MEMORY_GITIGNORE_PATTERNS = [
     "temp/",
     "logs/",
     "*.log",
+    "backups/",
     "__pycache__/",
     "*.pyc",
     ".env",
