@@ -165,6 +165,41 @@ class HKTMv5:
             pr_id=pr_id,
         )
 
+    def store_session_transcript(
+        self,
+        content: str,
+        session_id: str = "",
+        title: str = "",
+        topic: str = "session",
+        task_id: str = None,
+        project: str = None,
+        repo_root: str = None,
+        branch: str = None,
+        pr: str = None,
+        pr_id: str = None,
+        source: str = "auto_capture",
+        source_mode: str = "direct",
+        importance: str = "medium",
+        max_chars: int = 12000,
+        metadata: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        return self.layers.store_session_transcript(
+            content=content,
+            session_id=session_id,
+            title=title,
+            topic=topic,
+            task_id=task_id,
+            project=project,
+            repo_root=repo_root,
+            branch=branch,
+            pr_id=pr_id or pr,
+            source=source,
+            source_mode=source_mode,
+            importance=importance,
+            max_chars=max_chars,
+            metadata=metadata,
+        )
+
     def list_recent(
         self,
         limit: int = 5,
@@ -438,6 +473,23 @@ def main():
     recent_parser.add_argument("--branch", help="branch 过滤")
     recent_parser.add_argument("--pr", help="PR 过滤")
     recent_parser.add_argument("--pr-id", help="PR ID 过滤")
+
+    store_session_parser = subparsers.add_parser("store-session-transcript", help="存储 session transcript")
+    store_session_parser.add_argument("--content", "-c", required=True, help="Transcript 内容")
+    store_session_parser.add_argument("--session-id", default="", help="Session ID")
+    store_session_parser.add_argument("--title", "-t", default="", help="标题")
+    store_session_parser.add_argument("--topic", default="session", help="主题")
+    store_session_parser.add_argument("--task-id", help="Task ID")
+    store_session_parser.add_argument("--project", help="Project/repo name")
+    store_session_parser.add_argument("--repo-root", help="Repo root path")
+    store_session_parser.add_argument("--branch", help="Git branch")
+    store_session_parser.add_argument("--pr", help="PR")
+    store_session_parser.add_argument("--pr-id", help="PR ID")
+    store_session_parser.add_argument("--source", default="auto_capture", help="Transcript source")
+    store_session_parser.add_argument("--source-mode", default="direct", help="Source mode")
+    store_session_parser.add_argument("--importance", choices=["high", "medium", "low"], default="medium", help="重要性")
+    store_session_parser.add_argument("--max-chars", type=int, default=12000, help="最大存储字符数")
+    store_session_parser.add_argument("--metadata", default="{}", help="JSON metadata")
 
     prefetch_parser = subparsers.add_parser("prefetch", help="预取 orchestrator 依赖的 memory sources")
     prefetch_parser.add_argument("--query", "-q", default="", help="预取 query")
@@ -734,6 +786,33 @@ def main():
             pr_id=args.pr_id,
         )
         print("🕘 Recent Sessions\n")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "store-session-transcript":
+        try:
+            metadata = json.loads(args.metadata or "{}")
+            if not isinstance(metadata, dict):
+                raise ValueError("--metadata must be a JSON object")
+        except Exception as exc:
+            print(json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+            sys.exit(1)
+        result = memory.store_session_transcript(
+            content=args.content,
+            session_id=args.session_id,
+            title=args.title,
+            topic=args.topic,
+            task_id=args.task_id,
+            project=args.project,
+            repo_root=args.repo_root,
+            branch=args.branch,
+            pr=args.pr,
+            pr_id=args.pr_id,
+            source=args.source,
+            source_mode=args.source_mode,
+            importance=args.importance,
+            max_chars=args.max_chars,
+            metadata=metadata,
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif args.command == "prefetch":

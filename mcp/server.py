@@ -48,6 +48,7 @@ class MemoryMCPServer:
             "memory_recall": self.tools.memory_recall,
             "memory_orchestrate_recall": self.tools.memory_orchestrate_recall,
             "memory_session_search": self.tools.memory_session_search,
+            "memory_store_session_transcript": self.tools.memory_store_session_transcript,
             "memory_store": self.tools.memory_store,
             "memory_forget": self.tools.memory_forget,
             "memory_restore": self.tools.memory_restore,
@@ -144,6 +145,27 @@ class MemoryMCPServer:
                         "branch": {"type": "string"},
                         "pr": {"type": "string"},
                         "pr_id": {"type": "string"}
+                    }
+                },
+                {
+                    "name": "memory_store_session_transcript",
+                    "description": "Store a session transcript with provenance, dedupe, compression, and safety metadata",
+                    "parameters": {
+                        "content": {"type": "string", "required": True},
+                        "session_id": {"type": "string"},
+                        "title": {"type": "string", "default": ""},
+                        "topic": {"type": "string", "default": "session"},
+                        "task_id": {"type": "string"},
+                        "project": {"type": "string"},
+                        "repo_root": {"type": "string"},
+                        "branch": {"type": "string"},
+                        "pr": {"type": "string"},
+                        "pr_id": {"type": "string"},
+                        "source": {"type": "string", "default": "auto_capture"},
+                        "source_mode": {"type": "string", "default": "direct"},
+                        "importance": {"type": "string", "default": "medium"},
+                        "max_chars": {"type": "integer", "default": 12000},
+                        "metadata": {"type": "object"}
                     }
                 },
                 {
