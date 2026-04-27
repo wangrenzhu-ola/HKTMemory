@@ -64,6 +64,7 @@ from layers.manager_v5 import LayerManagerV5
 from config.loader import ConfigLoader
 from runtime.orchestrator import RecallOrchestrator, RecallRequest
 from runtime.provider import LocalMemoryProvider
+from runtime.migration import migrate_memory_copy_first
 from runtime.root import memory_root_status, resolve_memory_root
 from runtime.task_memory import TaskMemoryRuntime, parse_json_payload, skipped_result
 
@@ -299,12 +300,41 @@ class HKTMv5:
                 "message": "未执行全量同步",
                 "incremental_sync": {"success": False, "message": "增量同步暂未实现"},
             }
-        if rebuild_index and hasattr(self.layers.vector_store, "rebuild_from_files"):
-            entries = self.layers.l2.iter_entries()
-            index_result = self.layers.vector_store.rebuild_from_files(entries)
-            result["rebuild_index"] = index_result
-            result["success"] = bool(result.get("success", True) and index_result.get("success", False))
+        if rebuild_index:
+            result["rebuild_index"] = self.rebuild_index(full=full)
+            result["success"] = bool(result.get("success", True) and result["rebuild_index"].get("success", False))
         return result
+
+    def rebuild_index(self, full: bool = False, include_archived: bool = False) -> Dict[str, Any]:
+        """Rebuild generated indexes/state from durable memory files."""
+        result: Dict[str, Any] = {"success": True, "full": full, "steps": {}}
+        if hasattr(self.layers.vector_store, "rebuild_from_files"):
+            entries = self.layers.l2.iter_entries(scope="all")
+            vector_result = self.layers.vector_store.rebuild_from_files(entries)
+        else:
+            vector_result = {"success": False, "message": "vector backend does not support rebuild_from_files"}
+        result["steps"]["vector_store"] = vector_result
+        result["success"] = bool(result["success"] and vector_result.get("success", False))
+
+        if hasattr(self.layers, "_rebuild_session_transcript_index"):
+            session_result = self.layers._rebuild_session_transcript_index(include_archived=include_archived)
+            result["steps"]["session_transcript_index"] = session_result
+            result["success"] = bool(result["success"] and session_result.get("success", False))
+
+        if full:
+            aggregate_result = self.rebuild(include_archived=include_archived)
+            result["steps"]["aggregates"] = aggregate_result
+            result["success"] = bool(result["success"] and aggregate_result.get("success", False))
+        return result
+
+    def migrate(self, source: str, target: str, dry_run: bool = True, overwrite: bool = False, include_aggregates: bool = True) -> Dict[str, Any]:
+        return migrate_memory_copy_first(
+            Path(source),
+            Path(target),
+            dry_run=dry_run,
+            overwrite=overwrite,
+            include_aggregates=include_aggregates,
+        )
     
     def stats(self) -> Dict[str, Any]:
         """获取统计"""
@@ -580,6 +610,19 @@ def main():
         action="store_true",
         help="从文件系统重建向量索引"
     )
+
+    migrate_parser = subparsers.add_parser("migrate", help="copy-first 迁移 memory root 到公共知识库")
+    migrate_parser.add_argument("--source", required=True, help="源 memory root")
+    migrate_parser.add_argument("--target", required=True, help="目标 public memory root")
+    migrate_parser.add_argument("--apply", action="store_true", help="执行复制；默认只 dry-run 输出计划")
+    migrate_parser.add_argument("--overwrite", action="store_true", help="允许覆盖目标已有文件")
+    migrate_parser.add_argument("--no-aggregates", action="store_true", help="不复制 L0/L1 聚合，迁移后重建")
+    migrate_parser.add_argument("--json", action="store_true", help="输出 JSON 迁移计划/结果")
+
+    rebuild_index_parser = subparsers.add_parser("rebuild-index", help="从 durable memory 文件重建索引/运行状态")
+    rebuild_index_parser.add_argument("--full", action="store_true", help="同时重建 L0/L1 聚合")
+    rebuild_index_parser.add_argument("--include-archived", action="store_true", help="包含 archived 记忆")
+    rebuild_index_parser.add_argument("--json", action="store_true", help="输出 JSON")
     
     # Stats command
     subparsers.add_parser("stats", help="显示统计")
@@ -666,7 +709,7 @@ def main():
 
     # 初始化。task-* 命令必须保持 stdout JSON-only，所以初始化期 warning 转到 stderr。
     if args.command in json_only_commands or (
-        args.command in {"status", "doctor"} and getattr(args, "json", False)
+        args.command in {"status", "doctor", "migrate", "rebuild-index"} and getattr(args, "json", False)
     ):
         with redirect_stdout(sys.stderr):
             memory = HKTMv5(
@@ -915,6 +958,38 @@ def main():
         result = memory.sync(full=args.full, rebuild_index=args.rebuild_index)
         if result:
             print("🔁 同步结果\n")
+            for key, value in result.items():
+                print(f"   {key}: {value}")
+
+    elif args.command == "migrate":
+        result = memory.migrate(
+            source=args.source,
+            target=args.target,
+            dry_run=not args.apply,
+            overwrite=args.overwrite,
+            include_aggregates=not args.no_aggregates,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print("🚚 Copy-first migration")
+            print(f"   mode: {result['mode']}")
+            print(f"   source: {result['source']}")
+            print(f"   target: {result['target']}")
+            print(f"   counts: {result['counts']}")
+            print(f"   gitignore_changed: {result['gitignore']['changed']}")
+            if result["conflicts"]:
+                print(f"   conflicts: {len(result['conflicts'])} (use --overwrite if intended)")
+            print("   next:")
+            for step in result["next_steps"]:
+                print(f"     {step}")
+
+    elif args.command == "rebuild-index":
+        result = memory.rebuild_index(full=args.full, include_archived=args.include_archived)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print("🧱 索引重建结果\n")
             for key, value in result.items():
                 print(f"   {key}: {value}")
     

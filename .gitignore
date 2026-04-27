@@ -3,9 +3,22 @@ __pycache__/
 *.pyc
 .DS_Store
 memory/
+# HKTMemory generated/runtime state (safe to rebuild)
 *.db
 *.sqlite
 *.sqlite3
+vector_store.*
+entity_index.*
+session_transcript_index.*
+memory.db
+_session_transcripts/
+_lifecycle/
+.cache/
+cache/
+tmp/
+temp/
+logs/
+*.log
 backups/
 .env
 .trae/
